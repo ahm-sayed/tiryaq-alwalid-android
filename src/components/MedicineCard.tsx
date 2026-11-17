@@ -1,5 +1,5 @@
 import React from 'react';
-import { calculateMedicationMetrics, type Medicine } from '../utils/medicationLogic';
+import { calculateMedicationMetrics, WEEKDAYS_AR, type Medicine } from '../utils/medicationLogic';
 
 interface MedicineCardProps {
   med: Medicine;
@@ -114,12 +114,14 @@ export const MedicineCard: React.FC<MedicineCardProps> = ({
             <div>
               <span className="text-slate-400 font-normal">استهلك تلقائياً: </span>
               <span className="text-slate-800">
-                {metrics.consumedPills} ({metrics.daysElapsed} يوم)
+                {metrics.consumedPills} ({metrics.intakeDaysElapsed} يوم تناول)
               </span>
             </div>
             <div className="text-left">
               <span className="text-slate-400 font-normal">الجرعة: </span>
-              <span className="text-slate-800">{med.dailyDose} حبة / يوم</span>
+              <span className="text-slate-800">
+                {med.dailyDose} حبة / {med.offDays && med.offDays.length > 0 ? 'يوم تناول' : 'يوم'}
+              </span>
             </div>
           </div>
         </div>
@@ -132,6 +134,17 @@ export const MedicineCard: React.FC<MedicineCardProps> = ({
           </div>
           <span className="font-black text-slate-900">{metrics.refillDateFormatted}</span>
         </div>
+
+        {/* أيام الراحة الأسبوعية */}
+        {med.courseType === 'chronic' && med.offDays && med.offDays.length > 0 && (
+          <div className="text-xs bg-sky-50 text-sky-900 p-2.5 rounded-xl border border-sky-200 mb-2">
+            <span className="font-bold">أيام الراحة الأسبوعية: </span>
+            {med.offDays
+              .filter((day) => Number.isInteger(day) && day >= 0 && day < WEEKDAYS_AR.length)
+              .map((day) => WEEKDAYS_AR[day])
+              .join('، ')}
+          </div>
+        )}
 
         {/* تاريخ بدء العلبة */}
         <div className="text-[11px] text-slate-400 font-medium px-1 mb-2">

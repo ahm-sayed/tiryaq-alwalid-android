@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import {
   calculateMedicationMetrics,
   formatIsoDate,
+  WEEKDAYS_AR,
   type CourseType,
   type Medicine,
 } from '../utils/medicationLogic';
@@ -26,6 +27,7 @@ export const MedicineFormModal: React.FC<AddEditModalProps> = ({
   const [startDate, setStartDate] = useState<string>(formatIsoDate());
   const [courseType, setCourseType] = useState<CourseType>('chronic');
   const [courseDays, setCourseDays] = useState<string>('');
+  const [offDays, setOffDays] = useState<number[]>([]);
   const [warningDays, setWarningDays] = useState<number>(3);
   const [notes, setNotes] = useState('');
 
@@ -38,8 +40,10 @@ export const MedicineFormModal: React.FC<AddEditModalProps> = ({
       setInitialPills(String(editingMedicine.initialPills || 30));
       setDailyDose(String(editingMedicine.dailyDose || 1));
       setStartDate(editingMedicine.startDate || today);
-      setCourseType(editingMedicine.courseType || 'chronic');
+      const editingCourseType = editingMedicine.courseType || 'chronic';
+      setCourseType(editingCourseType);
       setCourseDays(editingMedicine.courseDays ? String(editingMedicine.courseDays) : '');
+      setOffDays(editingCourseType === 'chronic' ? editingMedicine.offDays || [] : []);
       setWarningDays(editingMedicine.warningDays || 3);
       setNotes(editingMedicine.notes || '');
     } else {
@@ -50,6 +54,7 @@ export const MedicineFormModal: React.FC<AddEditModalProps> = ({
       setStartDate(today);
       setCourseType('chronic');
       setCourseDays('');
+      setOffDays([]);
       setWarningDays(3);
       setNotes('');
     }
@@ -74,6 +79,7 @@ export const MedicineFormModal: React.FC<AddEditModalProps> = ({
         dailyDose: parsedDose,
         startDate: startDate || formatIsoDate(),
         courseType,
+        offDays: courseType === 'chronic' ? offDays : [],
         courseDays: courseType === 'fixed' ? parseInt(courseDays, 10) || 7 : null,
         warningDays,
         notes: notes.trim(),
@@ -228,7 +234,11 @@ export const MedicineFormModal: React.FC<AddEditModalProps> = ({
               <select
                 id="medCourseType"
                 value={courseType}
-                onChange={(e) => setCourseType(e.target.value as CourseType)}
+                onChange={(e) => {
+                  const nextCourseType = e.target.value as CourseType;
+                  setCourseType(nextCourseType);
+                  if (nextCourseType === 'fixed') setOffDays([]);
+                }}
                 className="w-full px-3 py-2.5 rounded-xl border border-slate-300 focus:border-emerald-500 focus:ring-2 focus:ring-emerald-200 text-sm font-semibold outline-none bg-white"
               >
                 <option value="chronic">علاج دائم / مزمن (مستمر دائماً)</option>
@@ -236,6 +246,46 @@ export const MedicineFormModal: React.FC<AddEditModalProps> = ({
               </select>
             </div>
           </div>
+
+          {courseType === 'chronic' && (
+            <div className="space-y-2 bg-sky-50 p-3.5 rounded-2xl border border-sky-200">
+              <div>
+                <span className="block text-xs font-bold text-sky-950">
+                  أيام الراحة الأسبوعية (اختياري)
+                </span>
+                <span className="text-[11px] text-sky-800">
+                  حدد يوماً أو يومين لا يتناول فيهما الدواء أسبوعياً.
+                </span>
+              </div>
+              <div className="grid grid-cols-4 gap-2">
+                {WEEKDAYS_AR.map((dayName, day) => {
+                  const isOffDay = offDays.includes(day);
+                  return (
+                    <button
+                      key={day}
+                      type="button"
+                      aria-pressed={isOffDay}
+                      disabled={!isOffDay && offDays.length >= 2}
+                      onClick={() =>
+                        setOffDays((current) =>
+                          current.includes(day)
+                            ? current.filter((selectedDay) => selectedDay !== day)
+                            : [...current, day].sort((a, b) => a - b)
+                        )
+                      }
+                      className={`p-2 rounded-xl border text-xs font-bold transition disabled:opacity-40 disabled:cursor-not-allowed ${
+                        isOffDay
+                          ? 'bg-sky-700 text-white border-sky-700'
+                          : 'bg-white text-sky-900 border-sky-200 hover:bg-sky-100'
+                      }`}
+                    >
+                      {dayName}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          )}
 
           {courseType === 'fixed' && (
             <div className="bg-purple-50 p-3.5 rounded-2xl border border-purple-200 space-y-1">

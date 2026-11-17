@@ -58,6 +58,49 @@ test('calculateMedicationMetrics marks stable medicine as non-urgent when daysRe
   assert.equal(metrics.isDepleted, false);
 });
 
+test('calculateMedicationMetrics excludes weekly off days from consumption and depletion reminders', () => {
+  const medicine: Medicine = {
+    id: 'med_weekly_break',
+    name: 'دواء مزمن',
+    type: 'أقراص',
+    initialPills: 20,
+    dailyDose: 1,
+    startDate: '2026-11-01', // Sunday
+    courseType: 'chronic',
+    offDays: [5, 6], // Friday and Saturday
+    courseDays: null,
+    warningDays: 3,
+    notes: '',
+  };
+
+  const metrics = calculateMedicationMetrics(medicine, new Date(2026, 10, 8));
+  assert.equal(metrics.daysElapsed, 7);
+  assert.equal(metrics.intakeDaysElapsed, 5);
+  assert.equal(metrics.consumedPills, 5);
+  assert.equal(metrics.currentPills, 15);
+  assert.equal(metrics.intakeDaysRemaining, 15);
+  assert.equal(metrics.daysRemaining, 21);
+});
+
+test('calculateMedicationMetrics preserves daily schedules for medicines without off days', () => {
+  const medicine: Medicine = {
+    id: 'med_legacy',
+    name: 'دواء قديم',
+    type: 'أقراص',
+    initialPills: 30,
+    dailyDose: 1,
+    startDate: '2026-11-01',
+    courseType: 'chronic',
+    courseDays: null,
+    warningDays: 3,
+    notes: '',
+  };
+
+  const metrics = calculateMedicationMetrics(medicine, new Date(2026, 10, 8));
+  assert.equal(metrics.consumedPills, 7);
+  assert.equal(metrics.daysRemaining, 23);
+});
+
 test('calculateMedicationMetrics tracks fixed course completion and excludes finished courses from urgent alarms', () => {
   const refDate = new Date(2026, 10, 11);
   const finishedAntibiotic: Medicine = {

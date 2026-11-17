@@ -1,6 +1,10 @@
 import { Capacitor } from '@capacitor/core';
 import { LocalNotifications } from '@capacitor/local-notifications';
-import { calculateMedicationMetrics, type Medicine } from './medicationLogic';
+import {
+  calculateMedicationMetrics,
+  countIntakeDaysBetween,
+  type Medicine,
+} from './medicationLogic';
 
 export type RingtonePattern = 'native_phone' | 'emergency' | 'intensive' | 'classic';
 
@@ -593,7 +597,12 @@ export async function scheduleBackgroundMedicationAlarms(
               minute,
               0
             );
-            const remainingAtDay = Math.max(0, metrics.daysRemaining - d);
+            const intakeDaysPassed = countIntakeDaysBetween(
+              now,
+              targetTime,
+              med.courseType === 'chronic' ? med.offDays : []
+            );
+            const remainingAtDay = Math.max(0, metrics.intakeDaysRemaining - intakeDaysPassed);
             if (targetTime.getTime() > now.getTime() + 60000 && alarmIdCounter <= 1295) {
               nativeAlarmsPayload.push({
                 id: alarmIdCounter++,
