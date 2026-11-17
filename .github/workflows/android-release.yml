@@ -14,6 +14,17 @@ jobs:
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Determine Next Release Version
+        id: release
+        run: |
+          git fetch --tags --force
+          latest_tag="$(git tag --list 'v1.0.*' --sort=-version:refname | head -n 1)"
+          latest_patch="${latest_tag##*.}"
+          next_patch="$((latest_patch + 1))"
+          echo "tag_name=v1.0.${next_patch}" >> "$GITHUB_OUTPUT"
 
       - name: Setup Node.js 22
         uses: actions/setup-node@v4
@@ -70,10 +81,10 @@ jobs:
       - name: Create GitHub Release with Direct APK Download Link
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v1.0.${{ github.run_number }}
-          name: "ترياق الوالد - تطبيق أندرويد جاهز للتثبيت (v1.0.${{ github.run_number }})"
+          tag_name: ${{ steps.release.outputs.tag_name }}
+          name: "ترياق الوالد - تطبيق أندرويد جاهز للتثبيت (${{ steps.release.outputs.tag_name }})"
           body: |
-            ## 📱 تطبيق ترياق الوالد للأندرويد (الإصدار المحدث v1.0.${{ github.run_number }})
+            ## 📱 تطبيق ترياق الوالد للأندرويد (الإصدار المحدث ${{ steps.release.outputs.tag_name }})
             
             تم بناء حزمة الأندرويد المحدثة (`tiryaq-alwalid-android.apk`) بنجاح مع التحديثات الحرجة:
             - **إرسال الإشعارات والرنين حتى والتطبيق ميت ومغلق تماماً لأيام**: عبر محرك `AlarmManager.setAlarmClock` الأصلي في أندرويد ومستقبل `TiryaqAlarmReceiver` و `TiryaqBootReceiver` الذي يوقظ الهاتف في الموعد المحدد بالضبط.
