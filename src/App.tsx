@@ -11,6 +11,7 @@ import {
   formatIsoDate,
   getDefaultSampleMedicines,
   getUrgentMedicinesList,
+  updateMedicineInventory,
   type Medicine,
 } from './utils/medicationLogic';
 import {
@@ -137,16 +138,57 @@ export default function App() {
             ? `تنبيه: دواء (${first.name}) نفد تماماً بحساب الأيام التلقائي! اشترِ العلبة الآن.`
             : `تنبيه عاجل: دواء (${first.name}) سينفد خلال ${first.days} يوم (متبقي ${first.pills} كبسولة).`;
 
-        startContinuousAlarm(message);
-        triggerStrongAndroidNotification('ترياق الوالد | تنبيه تجديد عاجل', message);
-      } else {
+        setAlarmBannerText(message);
+      } else if (!isTestAlarmActive) {
         stopContinuousSoundLoop();
         setIsAlarmRinging(false);
-        setIsTestAlarmActive(false);
       }
     },
-    [startContinuousAlarm]
+    [isTestAlarmActive]
   );
+
+  const syncMedicationAlarms = useCallback(async (medsList: Medicine[]) => {
+    const scheduledMedicines = await scheduleBackgroundMedicationAlarms(medsList);
+    if (scheduledMedicines === medsList) return;
+
+    const sourceById = new Map(medsList.map((med) => [med.id, med]));
+    const scheduledById = new Map(scheduledMedicines.map((med) => [med.id, med]));
+    setMedicines((current) => {
+      let changed = false;
+      const next = current.map((med) => {
+        const source = sourceById.get(med.id);
+        const scheduled = scheduledById.get(med.id);
+        if (
+          !source ||
+          !scheduled ||
+          med.initialPills !== source.initialPills ||
+          med.startDate !== source.startDate ||
+          med.renewalAlertLimit !== source.renewalAlertLimit ||
+          med.courseType !== source.courseType ||
+          med.courseDays !== source.courseDays ||
+          med.dailyDose !== source.dailyDose ||
+          med.warningDays !== source.warningDays ||
+          med.name !== source.name ||
+          JSON.stringify(med.offDays || []) !== JSON.stringify(source.offDays || []) ||
+          JSON.stringify(med.renewalAlertPlan || []) !==
+            JSON.stringify(source.renewalAlertPlan || [])
+        ) {
+          return med;
+        }
+
+        if (
+          JSON.stringify(med.renewalAlertPlan || []) ===
+          JSON.stringify(scheduled.renewalAlertPlan || [])
+        ) {
+          return med;
+        }
+
+        changed = true;
+        return { ...med, renewalAlertPlan: scheduled.renewalAlertPlan };
+      });
+      return changed ? next : current;
+    });
+  }, []);
 
   // Sync medicines to localStorage and schedule background Android alarms
   useEffect(() => {
@@ -155,8 +197,8 @@ export default function App() {
     } catch {
       // ignore
     }
-    scheduleBackgroundMedicationAlarms(medicines);
-  }, [medicines]);
+    void syncMedicationAlarms(medicines);
+  }, [medicines, syncMedicationAlarms]);
 
   // Countdown timer for closed-app test alarm
   useEffect(() => {
@@ -193,7 +235,7 @@ export default function App() {
 
     const handleVisibilityChange = () => {
       if (document.visibilityState === 'hidden') {
-        scheduleBackgroundMedicationAlarms(medicines);
+        void syncMedicationAlarms(medicines);
       }
     };
     document.addEventListener('visibilitychange', handleVisibilityChange);
@@ -209,7 +251,7 @@ export default function App() {
       document.removeEventListener('touchstart', enableAudioOnUserGesture);
       document.removeEventListener('visibilitychange', handleVisibilityChange);
     };
-  }, [medicines, checkAllMedicationsRefillStatus]);
+  }, [medicines, checkAllMedicationsRefillStatus, syncMedicationAlarms]);
 
   const toggleTestAlarm = () => {
     markUserInteraction();
@@ -244,11 +286,11 @@ export default function App() {
       const permission = await requestAllNotificationPermissions();
       setNotifPerm(permission);
       if (permission === 'granted') {
-        await scheduleBackgroundMedicationAlarms(medicines);
+        await syncMedicationAlarms(medicines);
         showToast('تم تفعيل الإشعارات الخلفية القوية بنجاح!', 'success');
         await triggerStrongAndroidNotification(
           'ترياق الوالد | تم التفعيل',
-          'سيصلك تنبيه تلقائي قوي بصوت هاتفك بمجرد وصول أي دواء لموعد التجديد حتى والتطبيق مغلق.'
+          'ستصلك تنبيهات التجديد المحدودة لكل دواء حتى والتطبيق مغلق.'
         );
       } else if (permission === 'denied') {
         showToast('يرجى السماح بالإشعارات من إعدادات الهاتف لتفعيل التنبيهات', 'warning');
@@ -262,7 +304,17 @@ export default function App() {
     markUserInteraction();
     let nextMeds: Medicine[];
     if (existingId) {
-      nextMeds = medicines.map((m) => (m.id === existingId ? { ...medData, id: existingId } : m));
+      nextMeds = medicines.map((med) => {
+        if (med.id !== existingId) return med;
+        const updated = {
+          ...medData,
+          id: existingId,
+          renewalAlertPlan: med.renewalAlertPlan,
+        };
+        return med.initialPills !== medData.initialPills || med.startDate !== medData.startDate
+          ? updateMedicineInventory(updated, medData.initialPills, medData.startDate)
+          : updated;
+      });
       showToast(`تم تحديث بيانات (${medData.name})`, 'success');
     } else {
       const newMed: Medicine = {
@@ -292,11 +344,7 @@ export default function App() {
 
     const nextMeds = medicines.map((m) =>
       m.id === medId
-        ? {
-            ...m,
-            initialPills: totalStartingPills,
-            startDate: formatIsoDate(),
-          }
+        ? updateMedicineInventory(m, totalStartingPills, formatIsoDate())
         : m
     );
 
@@ -314,11 +362,7 @@ export default function App() {
 
     const nextMeds = medicines.map((m) =>
       m.id === medId
-        ? {
-            ...m,
-            initialPills: actualCount,
-            startDate: formatIsoDate(),
-          }
+        ? updateMedicineInventory(m, actualCount, formatIsoDate())
         : m
     );
 
@@ -380,9 +424,13 @@ export default function App() {
               </span>
               <div className="min-w-0 flex-1">
                 <h2 className="font-black text-xs sm:text-base tracking-wide flex flex-wrap items-center gap-1.5">
-                  <span>تنبيه عاجل: موعد تجديد وشراء دواء للوالد!</span>
+                  <span>
+                    {isTestAlarmActive
+                      ? 'اختبار رنين التنبيه'
+                      : 'تنبيه: موعد تجديد وشراء دواء للوالد!'}
+                  </span>
                   <span className="text-[10px] sm:text-xs bg-white text-rose-700 font-extrabold px-2 py-0.5 rounded-full">
-                    رنين متواصل
+                    رنين الاختبار
                   </span>
                 </h2>
                 <p

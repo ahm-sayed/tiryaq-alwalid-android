@@ -9,6 +9,9 @@ export type MedicineType =
 
 export type CourseType = 'chronic' | 'fixed';
 
+export const DEFAULT_RENEWAL_ALERT_LIMIT = 5;
+export const RENEWAL_ALERT_LIMIT_OPTIONS = [1, 3, 5, 10] as const;
+
 export const WEEKDAYS_AR = [
   'الأحد',
   'الاثنين',
@@ -18,6 +21,12 @@ export const WEEKDAYS_AR = [
   'الجمعة',
   'السبت',
 ] as const;
+
+export interface RenewalAlert {
+  triggerAt: number;
+  title: string;
+  body: string;
+}
 
 export interface Medicine {
   id: string;
@@ -30,6 +39,8 @@ export interface Medicine {
   offDays?: number[];
   courseDays: number | null;
   warningDays: number;
+  renewalAlertLimit?: number;
+  renewalAlertPlan?: RenewalAlert[];
   notes: string;
 }
 
@@ -62,6 +73,38 @@ export function formatIsoDate(date: Date = new Date()): string {
   const month = String(date.getMonth() + 1).padStart(2, '0');
   const day = String(date.getDate()).padStart(2, '0');
   return `${year}-${month}-${day}`;
+}
+
+export function getRenewalAlertLimit(med: Medicine): number {
+  const limit = Number(med.renewalAlertLimit);
+  return RENEWAL_ALERT_LIMIT_OPTIONS.some((option) => option === limit)
+    ? limit
+    : DEFAULT_RENEWAL_ALERT_LIMIT;
+}
+
+export function updateMedicineInventory(
+  med: Medicine,
+  initialPills: number,
+  startDate: string
+): Medicine {
+  return {
+    ...med,
+    initialPills,
+    startDate,
+    renewalAlertPlan: [],
+  };
+}
+
+export function getSavedRenewalAlertPlan(med: Medicine): RenewalAlert[] {
+  if (!Array.isArray(med.renewalAlertPlan)) return [];
+  return med.renewalAlertPlan.filter(
+    (alert) =>
+      !!alert &&
+      typeof alert === 'object' &&
+      Number.isFinite(alert.triggerAt) &&
+      typeof alert.title === 'string' &&
+      typeof alert.body === 'string'
+  );
 }
 
 export function countIntakeDaysBetween(
@@ -252,6 +295,107 @@ export function calculateMedicationMetrics(
     isDepleted,
     courseInfo,
   };
+}
+
+export function buildRenewalAlertPlan(
+  med: Medicine,
+  referenceDate: Date = new Date()
+): RenewalAlert[] {
+  const savedPlan = getSavedRenewalAlertPlan(med);
+  const alertLimit = getRenewalAlertLimit(med);
+  let remainingSlots = alertLimit - savedPlan.length;
+  if (remainingSlots <= 0) return savedPlan;
+
+  const metrics = calculateMedicationMetrics(med, referenceDate);
+  if (metrics.courseInfo?.isCourseFinished) return savedPlan;
+
+  const now = referenceDate.getTime();
+  const alerts = [...savedPlan];
+  const addAlert = (triggerAt: number, title: string, body: string) => {
+    if (remainingSlots <= 0 || triggerAt <= now + 60000) return;
+    alerts.push({ triggerAt, title, body });
+    remainingSlots--;
+  };
+
+  const urgentBody = metrics.isDepleted
+    ? `تنبيه عاجل جداً: دواء (${med.name}) نفد تماماً! اشترِ العلبة للوالد فوراً.`
+    : `تنبيه عاجل: دواء (${med.name}) سينفد خلال ${metrics.daysRemaining} يوم (متبقي ${metrics.currentPills} كبسولة).`;
+
+  if (metrics.isUrgent) {
+    addAlert(
+      new Date(Math.ceil((now + 15 * 60 * 1000) / 60000) * 60000).getTime(),
+      'ترياق الوالد | تذكير عاجل بشراء الدواء!',
+      urgentBody
+    );
+    addAlert(
+      new Date(Math.ceil((now + 2 * 60 * 60 * 1000) / 60000) * 60000).getTime(),
+      'ترياق الوالد | تذكير عاجل بشراء الدواء!',
+      urgentBody
+    );
+
+    for (let dayOffset = 0; dayOffset <= 21 && remainingSlots > 0; dayOffset++) {
+      for (const [hour, minute] of [
+        [10, 0],
+        [14, 0],
+        [18, 0],
+        [21, 30],
+      ]) {
+        const targetTime = new Date(
+          referenceDate.getFullYear(),
+          referenceDate.getMonth(),
+          referenceDate.getDate() + dayOffset,
+          hour,
+          minute,
+          0
+        );
+        addAlert(
+          targetTime.getTime(),
+          'ترياق الوالد | موعد تجديد وشراء دواء!',
+          urgentBody
+        );
+        if (remainingSlots <= 0) break;
+      }
+    }
+  } else {
+    const daysUntilWarning = Math.max(1, metrics.daysRemaining - (med.warningDays || 3));
+    const maxDayOffset = Math.min(daysUntilWarning + 21, metrics.daysRemaining + 14);
+
+    for (let dayOffset = daysUntilWarning; dayOffset <= maxDayOffset && remainingSlots > 0; dayOffset++) {
+      for (const [hour, minute] of [
+        [10, 0],
+        [14, 0],
+        [18, 0],
+        [21, 30],
+      ]) {
+        const targetTime = new Date(
+          referenceDate.getFullYear(),
+          referenceDate.getMonth(),
+          referenceDate.getDate() + dayOffset,
+          hour,
+          minute,
+          0
+        );
+        const intakeDaysPassed = countIntakeDaysBetween(
+          referenceDate,
+          targetTime,
+          med.courseType === 'chronic' ? med.offDays : []
+        );
+        const remainingAtDay = Math.max(0, metrics.intakeDaysRemaining - intakeDaysPassed);
+        addAlert(
+          targetTime.getTime(),
+          'ترياق الوالد | تنبيه تجديد دواء الوالد!',
+          remainingAtDay <= 0
+            ? `تنبيه عاجل: دواء (${med.name}) ينفد اليوم! يرجى شراء علبة جديدة للوالد.`
+            : `تذكير مسبق: دواء (${med.name}) سينفد خلال ${remainingAtDay} يوم. يرجى شراء علبة جديدة.`
+        );
+        if (remainingSlots <= 0) break;
+      }
+    }
+  }
+
+  return alerts.length === savedPlan.length
+    ? savedPlan
+    : alerts.sort((a, b) => a.triggerAt - b.triggerAt);
 }
 
 export function getUrgentMedicinesList(

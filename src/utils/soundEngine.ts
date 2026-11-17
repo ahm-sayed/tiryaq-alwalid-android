@@ -1,8 +1,9 @@
 import { Capacitor } from '@capacitor/core';
 import { LocalNotifications } from '@capacitor/local-notifications';
 import {
-  calculateMedicationMetrics,
-  countIntakeDaysBetween,
+  buildRenewalAlertPlan,
+  getSavedRenewalAlertPlan,
+  getRenewalAlertLimit,
   type Medicine,
 } from './medicationLogic';
 
@@ -512,12 +513,25 @@ export async function triggerStrongAndroidNotification(
 }
 
 /**
- * جدولة منبهات حقيقية (AlarmManager.setAlarmClock) تعمل حتى لو التطبيق ميت ومغلق تماماً لأسابيع
+ * جدولة عدد التنبيهات المحدد عبر AlarmManager لتعمل حتى لو التطبيق مغلقاً.
  */
 export async function scheduleBackgroundMedicationAlarms(
   medicines: Medicine[]
-): Promise<void> {
+): Promise<Medicine[]> {
   try {
+    const hasNativeBridge = typeof window !== 'undefined' && !!window.TiryaqNative;
+    let maxAlarmCount = 0;
+    if (hasNativeBridge) {
+      maxAlarmCount = 296;
+    } else if (Capacitor.isNativePlatform()) {
+      await ensureAndroidNotificationChannel();
+      const perm = await LocalNotifications.checkPermissions();
+      if (perm.display !== 'granted') return medicines;
+      maxAlarmCount = 50;
+    } else {
+      return medicines;
+    }
+
     const now = new Date();
     const nativeAlarmsPayload: Array<{
       id: number;
@@ -527,131 +541,70 @@ export async function scheduleBackgroundMedicationAlarms(
     }> = [];
 
     let alarmIdCounter = 1000;
+    let alarmSlotsRemaining = maxAlarmCount;
+    let hasPlanChanges = false;
+    const updatedMedicines = medicines.map((med) => {
+      const currentPlan = getSavedRenewalAlertPlan(med);
+      const plan = buildRenewalAlertPlan(med, now).slice(0, getRenewalAlertLimit(med));
+      const pendingAlerts = plan.filter((alert) => alert.triggerAt > now.getTime() + 60000);
+      const selectedAlerts = pendingAlerts.slice(0, alarmSlotsRemaining);
+      alarmSlotsRemaining -= selectedAlerts.length;
+      const selectedSet = new Set(selectedAlerts);
 
-    medicines.forEach((med) => {
-      const metrics = calculateMedicationMetrics(med, now);
-      if (metrics.courseInfo && metrics.courseInfo.isCourseFinished) return;
-
-      const urgentBody = metrics.isDepleted
-        ? `تنبيه عاجل جداً: دواء (${med.name}) نفد تماماً! اشترِ العلبة للوالد فوراً.`
-        : `تنبيه عاجل: دواء (${med.name}) سينفد خلال ${metrics.daysRemaining} يوم (متبقي ${metrics.currentPills} كبسولة).`;
-
-      if (metrics.isUrgent) {
-        // تنبيه قريب بعد 15 دقيقة وبعد ساعتين في حال تم إغلاق التطبيق دون شراء الدواء
+      for (const alert of selectedAlerts) {
+        if (alarmIdCounter > 1295) break;
         nativeAlarmsPayload.push({
           id: alarmIdCounter++,
-          triggerAt: now.getTime() + 15 * 60 * 1000,
-          title: 'ترياق الوالد | تذكير عاجل بشراء الدواء!',
-          body: urgentBody,
+          triggerAt: alert.triggerAt,
+          title: alert.title,
+          body: alert.body,
         });
-        nativeAlarmsPayload.push({
-          id: alarmIdCounter++,
-          triggerAt: now.getTime() + 2 * 60 * 60 * 1000,
-          title: 'ترياق الوالد | تذكير عاجل بشراء الدواء!',
-          body: urgentBody,
-        });
-
-        // تنبيهات يومية متكررة لمدة 21 يوماً قادمة (10 صباحاً، 2 ظهراً، 6 مساءً، 9:30 مساءً) حتى لو لم يُفتح التطبيق لأيام
-        for (let dayOffset = 0; dayOffset <= 21; dayOffset++) {
-          for (const [hour, minute] of [
-            [10, 0],
-            [14, 0],
-            [18, 0],
-            [21, 30],
-          ]) {
-            const targetTime = new Date(
-              now.getFullYear(),
-              now.getMonth(),
-              now.getDate() + dayOffset,
-              hour,
-              minute,
-              0
-            );
-            if (targetTime.getTime() > now.getTime() + 60000 && alarmIdCounter <= 1295) {
-              nativeAlarmsPayload.push({
-                id: alarmIdCounter++,
-                triggerAt: targetTime.getTime(),
-                title: 'ترياق الوالد | موعد تجديد وشراء دواء!',
-                body: urgentBody,
-              });
-            }
-          }
-        }
-      } else {
-        // الدواء آمن حالياً: نجدول منبهات تلقائية تبدأ من يوم دخوله فترة التحذير وحتى 14 يوماً بعد موعد نفاده
-        const daysUntilWarning = Math.max(1, metrics.daysRemaining - (med.warningDays || 3));
-        const maxDayOffset = Math.min(daysUntilWarning + 21, metrics.daysRemaining + 14);
-
-        for (let d = daysUntilWarning; d <= maxDayOffset; d++) {
-          for (const [hour, minute] of [
-            [10, 0],
-            [14, 0],
-            [18, 0],
-            [21, 30],
-          ]) {
-            const targetTime = new Date(
-              now.getFullYear(),
-              now.getMonth(),
-              now.getDate() + d,
-              hour,
-              minute,
-              0
-            );
-            const intakeDaysPassed = countIntakeDaysBetween(
-              now,
-              targetTime,
-              med.courseType === 'chronic' ? med.offDays : []
-            );
-            const remainingAtDay = Math.max(0, metrics.intakeDaysRemaining - intakeDaysPassed);
-            if (targetTime.getTime() > now.getTime() + 60000 && alarmIdCounter <= 1295) {
-              nativeAlarmsPayload.push({
-                id: alarmIdCounter++,
-                triggerAt: targetTime.getTime(),
-                title: 'ترياق الوالد | تنبيه تجديد دواء الوالد!',
-                body:
-                  remainingAtDay <= 0
-                    ? `تنبيه عاجل: دواء (${med.name}) ينفد اليوم! يرجى شراء علبة جديدة للوالد.`
-                    : `تذكير مسبق: دواء (${med.name}) سينفد خلال ${remainingAtDay} يوم. يرجى شراء علبة جديدة.`,
-              });
-            }
-          }
-        }
       }
+
+      const updatedPlan = [
+        ...currentPlan,
+        ...plan.filter((alert) => !currentPlan.includes(alert) && selectedSet.has(alert)),
+      ].sort((a, b) => a.triggerAt - b.triggerAt);
+      if (JSON.stringify(updatedPlan) === JSON.stringify(med.renewalAlertPlan || [])) return med;
+
+      hasPlanChanges = true;
+      return { ...med, renewalAlertPlan: updatedPlan };
     });
 
-    if (window.TiryaqNative) {
-      window.TiryaqNative.syncMedicationAlarms(JSON.stringify(nativeAlarmsPayload));
-      return;
+    if (hasNativeBridge && window.TiryaqNative) {
+      const synced = window.TiryaqNative.syncMedicationAlarms(
+        JSON.stringify(nativeAlarmsPayload)
+      );
+      return synced && hasPlanChanges ? updatedMedicines : medicines;
     }
 
     if (Capacitor.isNativePlatform()) {
-      await ensureAndroidNotificationChannel();
-      const perm = await LocalNotifications.checkPermissions();
-      if (perm.display === 'granted') {
-        const pending = await LocalNotifications.getPending();
-        if (pending.notifications.length > 0) {
-          await LocalNotifications.cancel({
-            notifications: pending.notifications.map((n) => ({ id: n.id })),
-          });
-        }
-        if (nativeAlarmsPayload.length > 0) {
-          await LocalNotifications.schedule({
-            notifications: nativeAlarmsPayload.slice(0, 50).map((item) => ({
-              id: item.id,
-              title: item.title,
-              body: item.body,
-              channelId: ANDROID_CHANNEL_ID,
-              schedule: {
-                at: new Date(item.triggerAt),
-                allowWhileIdle: true,
-              },
-            })),
-          });
-        }
+      const pending = await LocalNotifications.getPending();
+      if (pending.notifications.length > 0) {
+        await LocalNotifications.cancel({
+          notifications: pending.notifications.map((n) => ({ id: n.id })),
+        });
       }
+      if (nativeAlarmsPayload.length > 0) {
+        await LocalNotifications.schedule({
+          notifications: nativeAlarmsPayload.map((item) => ({
+            id: item.id,
+            title: item.title,
+            body: item.body,
+            channelId: ANDROID_CHANNEL_ID,
+            schedule: {
+              at: new Date(item.triggerAt),
+              allowWhileIdle: true,
+            },
+          })),
+        });
+      }
+      return hasPlanChanges ? updatedMedicines : medicines;
     }
+    return medicines;
   } catch (err) {
     console.warn('Background alarm schedule warning:', err);
+    return medicines;
   }
 }
 

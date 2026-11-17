@@ -1,9 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  buildRenewalAlertPlan,
   calculateMedicationMetrics,
   calculatePortfolioStats,
+  getRenewalAlertLimit,
   getUrgentMedicinesList,
+  updateMedicineInventory,
   type Medicine,
 } from './medicationLogic';
 
@@ -101,6 +104,60 @@ test('calculateMedicationMetrics preserves daily schedules for medicines without
   assert.equal(metrics.daysRemaining, 23);
 });
 
+test('buildRenewalAlertPlan caps actual scheduled alerts and keeps the cap across later scheduling', () => {
+  const now = new Date(2026, 10, 17, 19);
+  const medicine: Medicine = {
+    id: 'med_alert_limit',
+    name: 'دواء مزمن',
+    type: 'أقراص',
+    initialPills: 2,
+    dailyDose: 1,
+    startDate: '2026-11-10',
+    courseType: 'chronic',
+    courseDays: null,
+    warningDays: 3,
+    renewalAlertLimit: 3,
+    notes: '',
+  };
+
+  const plan = buildRenewalAlertPlan(medicine, now);
+  assert.equal(plan.length, 3);
+  assert.ok(plan.every((alert) => alert.triggerAt > now.getTime()));
+  assert.equal(getRenewalAlertLimit({ ...medicine, renewalAlertLimit: undefined }), 5);
+
+  const afterAlerts = buildRenewalAlertPlan(
+    { ...medicine, renewalAlertPlan: plan },
+    new Date(2026, 11, 17)
+  );
+  assert.deepEqual(afterAlerts, plan);
+});
+
+test('updating medicine inventory clears the alert cap so reminders can be scheduled again', () => {
+  const now = new Date(2026, 10, 17, 19);
+  const medicine: Medicine = {
+    id: 'med_refill_reset',
+    name: 'دواء مزمن',
+    type: 'أقراص',
+    initialPills: 2,
+    dailyDose: 1,
+    startDate: '2026-11-10',
+    courseType: 'chronic',
+    courseDays: null,
+    warningDays: 3,
+    renewalAlertLimit: 3,
+    notes: '',
+  };
+  const exhausted = {
+    ...medicine,
+    renewalAlertPlan: buildRenewalAlertPlan(medicine, now),
+  };
+  assert.equal(exhausted.renewalAlertPlan.length, 3);
+
+  const refilled = updateMedicineInventory(exhausted, 30, '2026-11-17');
+  assert.deepEqual(refilled.renewalAlertPlan, []);
+  assert.equal(buildRenewalAlertPlan(refilled, now).length, 3);
+});
+
 test('calculateMedicationMetrics tracks fixed course completion and excludes finished courses from urgent alarms', () => {
   const refDate = new Date(2026, 10, 11);
   const finishedAntibiotic: Medicine = {
@@ -123,6 +180,7 @@ test('calculateMedicationMetrics tracks fixed course completion and excludes fin
 
   const urgentList = getUrgentMedicinesList([finishedAntibiotic], refDate);
   assert.equal(urgentList.length, 0);
+  assert.equal(buildRenewalAlertPlan(finishedAntibiotic, refDate).length, 0);
 });
 
 test('calculatePortfolioStats aggregates total, urgent, safe, chronic, and pill counts', () => {

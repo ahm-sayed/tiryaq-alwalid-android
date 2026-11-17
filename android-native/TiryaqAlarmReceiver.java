@@ -251,7 +251,6 @@ public class TiryaqAlarmReceiver extends BroadcastReceiver {
         }
 
         Notification notification = builder.build();
-        notification.flags |= Notification.FLAG_INSISTENT;
         nm.notify(alarmId, notification);
     }
 }

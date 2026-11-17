@@ -1,7 +1,10 @@
 import React, { useState, useEffect } from 'react';
 import {
   calculateMedicationMetrics,
+  DEFAULT_RENEWAL_ALERT_LIMIT,
   formatIsoDate,
+  getRenewalAlertLimit,
+  RENEWAL_ALERT_LIMIT_OPTIONS,
   WEEKDAYS_AR,
   type CourseType,
   type Medicine,
@@ -29,6 +32,9 @@ export const MedicineFormModal: React.FC<AddEditModalProps> = ({
   const [courseDays, setCourseDays] = useState<string>('');
   const [offDays, setOffDays] = useState<number[]>([]);
   const [warningDays, setWarningDays] = useState<number>(3);
+  const [renewalAlertLimit, setRenewalAlertLimit] = useState<number>(
+    DEFAULT_RENEWAL_ALERT_LIMIT
+  );
   const [notes, setNotes] = useState('');
 
   useEffect(() => {
@@ -45,6 +51,7 @@ export const MedicineFormModal: React.FC<AddEditModalProps> = ({
       setCourseDays(editingMedicine.courseDays ? String(editingMedicine.courseDays) : '');
       setOffDays(editingCourseType === 'chronic' ? editingMedicine.offDays || [] : []);
       setWarningDays(editingMedicine.warningDays || 3);
+      setRenewalAlertLimit(getRenewalAlertLimit(editingMedicine));
       setNotes(editingMedicine.notes || '');
     } else {
       setName('');
@@ -56,6 +63,7 @@ export const MedicineFormModal: React.FC<AddEditModalProps> = ({
       setCourseDays('');
       setOffDays([]);
       setWarningDays(3);
+      setRenewalAlertLimit(DEFAULT_RENEWAL_ALERT_LIMIT);
       setNotes('');
     }
   }, [isOpen, editingMedicine]);
@@ -82,6 +90,7 @@ export const MedicineFormModal: React.FC<AddEditModalProps> = ({
         offDays: courseType === 'chronic' ? offDays : [],
         courseDays: courseType === 'fixed' ? parseInt(courseDays, 10) || 7 : null,
         warningDays,
+        renewalAlertLimit,
         notes: notes.trim(),
       },
       editingMedicine?.id
@@ -343,6 +352,34 @@ export const MedicineFormModal: React.FC<AddEditModalProps> = ({
                   />
                   <span>{item.label}</span>
                 </label>
+              ))}
+            </div>
+          </div>
+
+          <div className="space-y-2 bg-amber-50 p-3.5 rounded-2xl border border-amber-200">
+            <div>
+              <span className="block text-xs font-bold text-amber-950">
+                عدد تنبيهات تجديد الدواء
+              </span>
+              <span className="text-[11px] text-amber-800">
+                يُجدول هذا العدد كحد أقصى، ثم يتوقف التذكير حتى تجدد المخزون أو تصححه. يرن كل تنبيه لمدة محدودة.
+              </span>
+            </div>
+            <div className="grid grid-cols-4 gap-2">
+              {RENEWAL_ALERT_LIMIT_OPTIONS.map((limit) => (
+                <button
+                  key={limit}
+                  type="button"
+                  aria-pressed={renewalAlertLimit === limit}
+                  onClick={() => setRenewalAlertLimit(limit)}
+                  className={`p-2 rounded-xl border text-xs font-bold transition ${
+                    renewalAlertLimit === limit
+                      ? 'bg-amber-600 text-white border-amber-600'
+                      : 'bg-white text-amber-900 border-amber-200 hover:bg-amber-100'
+                  }`}
+                >
+                  {limit} {limit === 1 ? 'تنبيه' : 'تنبيهات'}
+                </button>
               ))}
             </div>
           </div>

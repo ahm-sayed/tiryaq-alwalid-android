@@ -1,5 +1,10 @@
 import React from 'react';
-import { calculateMedicationMetrics, WEEKDAYS_AR, type Medicine } from '../utils/medicationLogic';
+import {
+  calculateMedicationMetrics,
+  getRenewalAlertLimit,
+  WEEKDAYS_AR,
+  type Medicine,
+} from '../utils/medicationLogic';
 
 interface MedicineCardProps {
   med: Medicine;
@@ -145,6 +150,17 @@ export const MedicineCard: React.FC<MedicineCardProps> = ({
               .join('، ')}
           </div>
         )}
+
+        <div className="text-xs bg-amber-50 text-amber-900 p-2.5 rounded-xl border border-amber-200 mb-2 flex items-center justify-between gap-2">
+          <span className="font-bold">تنبيهات التجديد:</span>
+          <span className="font-semibold">
+            {Math.min(med.renewalAlertPlan?.length || 0, getRenewalAlertLimit(med))} من{' '}
+            {getRenewalAlertLimit(med)}
+            {med.renewalAlertPlan &&
+              med.renewalAlertPlan.length >= getRenewalAlertLimit(med) &&
+              ' • اكتمل الجدول'}
+          </span>
+        </div>
 
         {/* تاريخ بدء العلبة */}
         <div className="text-[11px] text-slate-400 font-medium px-1 mb-2">
