@@ -2,8 +2,11 @@ import React, { useState, useEffect } from 'react';
 import {
   calculateMedicationMetrics,
   DEFAULT_RENEWAL_ALERT_LIMIT,
+  DEFAULT_STRIP_CAPACITY,
   formatIsoDate,
   getRenewalAlertLimit,
+  getActualStripPills,
+  getStripCapacity,
   RENEWAL_ALERT_LIMIT_OPTIONS,
   WEEKDAYS_AR,
   type CourseType,
@@ -26,6 +29,8 @@ export const MedicineFormModal: React.FC<AddEditModalProps> = ({
   const [name, setName] = useState('');
   const [type, setType] = useState('أقراص');
   const [initialPills, setInitialPills] = useState<string>('30');
+  const [stripCapacity, setStripCapacity] = useState<string>(String(DEFAULT_STRIP_CAPACITY));
+  const [actualStripPills, setActualStripPills] = useState<string>(String(DEFAULT_STRIP_CAPACITY));
   const [dailyDose, setDailyDose] = useState<string>('1');
   const [startDate, setStartDate] = useState<string>(formatIsoDate());
   const [courseType, setCourseType] = useState<CourseType>('chronic');
@@ -44,6 +49,8 @@ export const MedicineFormModal: React.FC<AddEditModalProps> = ({
       setName(editingMedicine.name);
       setType(editingMedicine.type || 'أقراص');
       setInitialPills(String(editingMedicine.initialPills || 30));
+      setStripCapacity(String(getStripCapacity(editingMedicine)));
+      setActualStripPills(String(getActualStripPills(editingMedicine)));
       setDailyDose(String(editingMedicine.dailyDose || 1));
       setStartDate(editingMedicine.startDate || today);
       const editingCourseType = editingMedicine.courseType || 'chronic';
@@ -57,6 +64,8 @@ export const MedicineFormModal: React.FC<AddEditModalProps> = ({
       setName('');
       setType('أقراص');
       setInitialPills('30');
+      setStripCapacity(String(DEFAULT_STRIP_CAPACITY));
+      setActualStripPills(String(DEFAULT_STRIP_CAPACITY));
       setDailyDose('1');
       setStartDate(today);
       setCourseType('chronic');
@@ -74,6 +83,8 @@ export const MedicineFormModal: React.FC<AddEditModalProps> = ({
     e.preventDefault();
     const trimmedName = name.trim();
     const parsedInitial = parseFloat(initialPills);
+    const parsedStripCapacity = parseFloat(stripCapacity);
+    const parsedActualStripPills = parseFloat(actualStripPills);
     const parsedDose = parseFloat(dailyDose);
     if (!trimmedName || isNaN(parsedInitial) || parsedInitial <= 0 || isNaN(parsedDose) || parsedDose <= 0) {
       return;
@@ -84,6 +95,18 @@ export const MedicineFormModal: React.FC<AddEditModalProps> = ({
         name: trimmedName,
         type,
         initialPills: parsedInitial,
+        ...(type === 'شريط'
+          ? {
+              stripCapacity:
+                Number.isFinite(parsedStripCapacity) && parsedStripCapacity > 0
+                  ? parsedStripCapacity
+                  : DEFAULT_STRIP_CAPACITY,
+              actualStripPills:
+                Number.isFinite(parsedActualStripPills) && parsedActualStripPills >= 0
+                  ? parsedActualStripPills
+                  : DEFAULT_STRIP_CAPACITY,
+            }
+          : {}),
         dailyDose: parsedDose,
         startDate: startDate || formatIsoDate(),
         courseType,
@@ -217,6 +240,45 @@ export const MedicineFormModal: React.FC<AddEditModalProps> = ({
               </span>
             </div>
           </div>
+
+          {type === 'شريط' && (
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 bg-violet-50 p-3.5 rounded-2xl border border-violet-200">
+              <div className="space-y-1">
+                <label htmlFor="stripCapacity" className="block text-xs font-bold text-violet-950">
+                  السعة القياسية للشريط
+                </label>
+                <input
+                  type="number"
+                  id="stripCapacity"
+                  min="1"
+                  step="1"
+                  value={stripCapacity}
+                  onChange={(e) => setStripCapacity(e.target.value)}
+                  className="w-full px-3 py-2.5 rounded-xl border border-violet-300 bg-white text-sm font-black text-violet-900 outline-none"
+                />
+                <span className="text-[10px] text-violet-700">
+                  عدد الأقراص عندما يكون الشريط كاملًا
+                </span>
+              </div>
+              <div className="space-y-1">
+                <label htmlFor="actualStripPills" className="block text-xs font-bold text-violet-950">
+                  الأقراص الموجودة فعليًا في الشريط
+                </label>
+                <input
+                  type="number"
+                  id="actualStripPills"
+                  min="0"
+                  step="1"
+                  value={actualStripPills}
+                  onChange={(e) => setActualStripPills(e.target.value)}
+                  className="w-full px-3 py-2.5 rounded-xl border border-violet-300 bg-white text-sm font-black text-violet-900 outline-none"
+                />
+                <span className="text-[10px] text-violet-700">
+                  منفصل عن العدد الإجمالي الموجود في العلبة
+                </span>
+              </div>
+            </div>
+          )}
 
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <div className="space-y-1">
@@ -423,7 +485,12 @@ export const MedicineFormModal: React.FC<AddEditModalProps> = ({
 interface QuickRefillModalProps {
   medicine: Medicine | null;
   onClose: () => void;
-  onConfirm: (medId: string, newPackCount: number, carryOver: boolean) => void;
+  onConfirm: (
+    medId: string,
+    newPackCount: number,
+    carryOver: boolean,
+    actualStripPills?: number
+  ) => void;
 }
 
 export const QuickRefillModal: React.FC<QuickRefillModalProps> = ({
@@ -433,10 +500,18 @@ export const QuickRefillModal: React.FC<QuickRefillModalProps> = ({
 }) => {
   const [packCount, setPackCount] = useState<string>('30');
   const [carryOver, setCarryOver] = useState<boolean>(true);
+  const [actualStripPills, setActualStripPills] = useState<string>('10');
 
   useEffect(() => {
     if (medicine) {
       setPackCount(String(medicine.initialPills || 30));
+      setActualStripPills(
+        String(
+          medicine.actualStripPills !== undefined
+            ? medicine.actualStripPills
+            : medicine.stripCapacity || 10
+        )
+      );
       setCarryOver(true);
     }
   }, [medicine]);
@@ -495,6 +570,29 @@ export const QuickRefillModal: React.FC<QuickRefillModalProps> = ({
               </label>
             </div>
           )}
+
+          {medicine.type === 'شريط' && (
+            <div className="pt-2 border-t border-violet-200">
+              <label
+                htmlFor="refillActualStripPills"
+                className="block text-xs font-bold text-violet-950 mb-1"
+              >
+                الأقراص الموجودة فعليًا في الشريط الجديد:
+              </label>
+              <input
+                type="number"
+                id="refillActualStripPills"
+                min="0"
+                step="1"
+                value={actualStripPills}
+                onChange={(e) => setActualStripPills(e.target.value)}
+                className="w-full px-3 py-2.5 rounded-xl border border-violet-300 font-black text-violet-900 text-center text-lg focus:border-violet-500 outline-none bg-white"
+              />
+              <span className="text-[10px] text-violet-700 block mt-1">
+                لا يحل هذا الحقل محل العدد الإجمالي لعلبة الشريط المكتوب أعلاه.
+              </span>
+            </div>
+          )}
         </div>
 
         <div className="flex items-center gap-2 pt-2">
@@ -511,7 +609,10 @@ export const QuickRefillModal: React.FC<QuickRefillModalProps> = ({
               onConfirm(
                 medicine.id,
                 parseFloat(packCount) || medicine.initialPills || 30,
-                carryOver
+                carryOver,
+                medicine.type === 'شريط'
+                  ? Math.max(0, parseFloat(actualStripPills) || 0)
+                  : undefined
               )
             }
             className="w-1/2 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-extrabold text-xs shadow-md transition flex items-center justify-center gap-1.5"

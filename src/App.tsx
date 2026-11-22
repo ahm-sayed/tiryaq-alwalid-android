@@ -331,7 +331,12 @@ export default function App() {
     checkAllMedicationsRefillStatus(nextMeds);
   };
 
-  const handleConfirmRefill = (medId: string, newPackCount: number, carryOver: boolean) => {
+  const handleConfirmRefill = (
+    medId: string,
+    newPackCount: number,
+    carryOver: boolean,
+    actualStripPills?: number
+  ) => {
     markUserInteraction();
     const target = medicines.find((m) => m.id === medId);
     if (!target) return;
@@ -344,7 +349,7 @@ export default function App() {
 
     const nextMeds = medicines.map((m) =>
       m.id === medId
-        ? updateMedicineInventory(m, totalStartingPills, formatIsoDate())
+        ? updateMedicineInventory(m, totalStartingPills, formatIsoDate(), actualStripPills)
         : m
     );
 

@@ -11,6 +11,7 @@ export type CourseType = 'chronic' | 'fixed';
 
 export const DEFAULT_RENEWAL_ALERT_LIMIT = 5;
 export const RENEWAL_ALERT_LIMIT_OPTIONS = [1, 3, 5, 10] as const;
+export const DEFAULT_STRIP_CAPACITY = 10;
 
 export const WEEKDAYS_AR = [
   'الأحد',
@@ -33,6 +34,8 @@ export interface Medicine {
   name: string;
   type: MedicineType | string;
   initialPills: number;
+  stripCapacity?: number;
+  actualStripPills?: number;
   dailyDose: number;
   startDate: string; // YYYY-MM-DD
   courseType: CourseType;
@@ -82,16 +85,37 @@ export function getRenewalAlertLimit(med: Medicine): number {
     : DEFAULT_RENEWAL_ALERT_LIMIT;
 }
 
+export function getStripCapacity(med: Medicine): number {
+  const capacity = Number(med.stripCapacity);
+  return Number.isFinite(capacity) && capacity > 0
+    ? capacity
+    : DEFAULT_STRIP_CAPACITY;
+}
+
+export function getActualStripPills(med: Medicine): number {
+  const actual = Number(med.actualStripPills);
+  return Number.isFinite(actual) && actual >= 0
+    ? actual
+    : getStripCapacity(med);
+}
+
+export function getStripDescription(med: Medicine): string | null {
+  if (med.type !== 'شريط') return null;
+  return `شريط حالي: ${getActualStripPills(med)} من ${getStripCapacity(med)} قرص`;
+}
+
 export function updateMedicineInventory(
   med: Medicine,
   initialPills: number,
-  startDate: string
+  startDate: string,
+  actualStripPills?: number
 ): Medicine {
   return {
     ...med,
     initialPills,
     startDate,
     renewalAlertPlan: [],
+    ...(actualStripPills !== undefined ? { actualStripPills } : {}),
   };
 }
 

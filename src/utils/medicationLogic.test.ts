@@ -4,7 +4,11 @@ import {
   buildRenewalAlertPlan,
   calculateMedicationMetrics,
   calculatePortfolioStats,
+  DEFAULT_STRIP_CAPACITY,
+  getActualStripPills,
   getRenewalAlertLimit,
+  getStripCapacity,
+  getStripDescription,
   getUrgentMedicinesList,
   updateMedicineInventory,
   type Medicine,
@@ -218,4 +222,56 @@ test('calculatePortfolioStats aggregates total, urgent, safe, chronic, and pill 
   assert.equal(stats.safeCount, 1);
   assert.equal(stats.totalPills, 33);
   assert.equal(stats.chronicCount, 2);
+});
+
+test('strip fields keep separate defaults and descriptions for old strip records', () => {
+  const legacyStrip: Medicine = {
+    id: 'strip_legacy',
+    name: 'دواء شريطي قديم',
+    type: 'شريط',
+    initialPills: 28,
+    dailyDose: 1,
+    startDate: '2026-11-01',
+    courseType: 'chronic',
+    courseDays: null,
+    warningDays: 3,
+    notes: '',
+  };
+
+  assert.equal(getStripCapacity(legacyStrip), DEFAULT_STRIP_CAPACITY);
+  assert.equal(getActualStripPills(legacyStrip), DEFAULT_STRIP_CAPACITY);
+  assert.equal(getStripDescription(legacyStrip), 'شريط حالي: 10 من 10 قرص');
+
+  const configuredStrip: Medicine = {
+    ...legacyStrip,
+    stripCapacity: 14,
+    actualStripPills: 6,
+  };
+  assert.equal(getStripCapacity(configuredStrip), 14);
+  assert.equal(getActualStripPills(configuredStrip), 6);
+  assert.equal(getStripDescription(configuredStrip), 'شريط حالي: 6 من 14 قرص');
+  assert.equal(getStripDescription({ ...configuredStrip, type: 'أقراص' }), null);
+});
+
+test('updating strip inventory preserves capacity and updates the actual strip count', () => {
+  const strip: Medicine = {
+    id: 'strip_refill',
+    name: 'دواء شريطي',
+    type: 'شريط',
+    initialPills: 28,
+    stripCapacity: 14,
+    actualStripPills: 14,
+    dailyDose: 1,
+    startDate: '2026-11-01',
+    courseType: 'chronic',
+    courseDays: null,
+    warningDays: 3,
+    notes: '',
+  };
+
+  const refilled = updateMedicineInventory(strip, 42, '2026-11-22', 8);
+  assert.equal(refilled.initialPills, 42);
+  assert.equal(refilled.stripCapacity, 14);
+  assert.equal(refilled.actualStripPills, 8);
+  assert.deepEqual(refilled.renewalAlertPlan, []);
 });

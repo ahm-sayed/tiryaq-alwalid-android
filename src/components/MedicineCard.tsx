@@ -2,6 +2,7 @@ import React from 'react';
 import {
   calculateMedicationMetrics,
   getRenewalAlertLimit,
+  getStripDescription,
   WEEKDAYS_AR,
   type Medicine,
 } from '../utils/medicationLogic';
@@ -69,6 +70,11 @@ export const MedicineCard: React.FC<MedicineCardProps> = ({
             <h3 className="text-base sm:text-lg font-black text-slate-900 mt-1.5 leading-snug">
               {med.name}
             </h3>
+            {getStripDescription(med) && (
+              <p className="mt-1 text-[11px] font-bold text-violet-700">
+                {getStripDescription(med)}
+              </p>
+            )}
           </div>
 
           {/* خيارات الإدارة */}
