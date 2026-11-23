@@ -162,6 +162,8 @@ export default function App() {
           !source ||
           !scheduled ||
           med.initialPills !== source.initialPills ||
+          med.stripCapacity !== source.stripCapacity ||
+          med.stripPillsRemainingAtStart !== source.stripPillsRemainingAtStart ||
           med.startDate !== source.startDate ||
           med.renewalAlertLimit !== source.renewalAlertLimit ||
           med.courseType !== source.courseType ||
@@ -335,7 +337,7 @@ export default function App() {
     medId: string,
     newPackCount: number,
     carryOver: boolean,
-    actualStripPills?: number
+    stripPillsRemainingAtStart?: number
   ) => {
     markUserInteraction();
     const target = medicines.find((m) => m.id === medId);
@@ -349,7 +351,12 @@ export default function App() {
 
     const nextMeds = medicines.map((m) =>
       m.id === medId
-        ? updateMedicineInventory(m, totalStartingPills, formatIsoDate(), actualStripPills)
+        ? updateMedicineInventory(
+            m,
+            totalStartingPills,
+            formatIsoDate(),
+            stripPillsRemainingAtStart
+          )
         : m
     );
 

@@ -35,6 +35,8 @@ export interface Medicine {
   type: MedicineType | string;
   initialPills: number;
   stripCapacity?: number;
+  stripPillsRemainingAtStart?: number;
+  /** Legacy compatibility for records saved before the strip fields were clarified. */
   actualStripPills?: number;
   dailyDose: number;
   startDate: string; // YYYY-MM-DD
@@ -93,7 +95,15 @@ export function getStripCapacity(med: Medicine): number {
 }
 
 export function getActualStripPills(med: Medicine): number {
-  const actual = Number(med.actualStripPills);
+  return getStripPillsRemainingAtStart(med);
+}
+
+export function getStripPillsRemainingAtStart(med: Medicine): number {
+  const actual = Number(
+    med.stripPillsRemainingAtStart !== undefined
+      ? med.stripPillsRemainingAtStart
+      : med.actualStripPills
+  );
   return Number.isFinite(actual) && actual >= 0
     ? actual
     : getStripCapacity(med);
@@ -101,21 +111,23 @@ export function getActualStripPills(med: Medicine): number {
 
 export function getStripDescription(med: Medicine): string | null {
   if (med.type !== 'شريط') return null;
-  return `شريط حالي: ${getActualStripPills(med)} من ${getStripCapacity(med)} قرص`;
+  return `شريط حالي: ${getStripPillsRemainingAtStart(med)} من ${getStripCapacity(med)} قرص`;
 }
 
 export function updateMedicineInventory(
   med: Medicine,
   initialPills: number,
   startDate: string,
-  actualStripPills?: number
+  stripPillsRemainingAtStart?: number
 ): Medicine {
   return {
     ...med,
     initialPills,
     startDate,
     renewalAlertPlan: [],
-    ...(actualStripPills !== undefined ? { actualStripPills } : {}),
+    ...(stripPillsRemainingAtStart !== undefined
+      ? { stripPillsRemainingAtStart }
+      : {}),
   };
 }
 
