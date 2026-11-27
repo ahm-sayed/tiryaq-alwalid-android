@@ -4,12 +4,16 @@ import {
   buildRenewalAlertPlan,
   calculateMedicationMetrics,
   calculatePortfolioStats,
+  calculateRefillResult,
+  DEFAULT_PACK_SIZE,
   DEFAULT_STRIP_CAPACITY,
+  getDefaultPackSizeForType,
+  getDefaultSampleMedicines,
+  getPackSize,
   getRenewalAlertLimit,
-  getStripCapacity,
-  getStripDescription,
-  getStripPillsRemainingAtStart,
   getUrgentMedicinesList,
+  isStartedOpened,
+  resolveMedicineFormInventory,
   updateMedicineInventory,
   type Medicine,
 } from './medicationLogic';
@@ -224,41 +228,198 @@ test('calculatePortfolioStats aggregates total, urgent, safe, chronic, and pill 
   assert.equal(stats.chronicCount, 2);
 });
 
-test('strip fields keep separate defaults and descriptions for old strip records', () => {
+test('getDefaultPackSizeForType returns strip default for strips and standard default for other types', () => {
+  assert.equal(getDefaultPackSizeForType('شريط'), DEFAULT_STRIP_CAPACITY);
+  assert.equal(getDefaultPackSizeForType('أقراص'), DEFAULT_PACK_SIZE);
+  assert.equal(getDefaultPackSizeForType('كبسولات'), DEFAULT_PACK_SIZE);
+  assert.equal(getDefaultPackSizeForType('شراب / مل'), DEFAULT_PACK_SIZE);
+  assert.equal(getDefaultPackSizeForType('حقن / أمبول'), DEFAULT_PACK_SIZE);
+});
+
+test('getPackSize resolves explicit packSize and migrates legacy strip and non-strip records', () => {
+  const base: Medicine = {
+    id: 'm_pack',
+    name: 'دواء',
+    type: 'شريط',
+    initialPills: 28,
+    dailyDose: 1,
+    startDate: '2026-11-01',
+    courseType: 'chronic',
+    courseDays: null,
+    warningDays: 3,
+    notes: '',
+  };
+
+  // Explicit packSize takes priority over legacy stripCapacity and initialPills
+  assert.equal(getPackSize({ ...base, packSize: 10, stripCapacity: 14, initialPills: 4 }), 10);
+
+  // Legacy v1.0.10 strip record uses stripCapacity without altering active initialPills
+  assert.equal(
+    getPackSize({ ...base, stripCapacity: 14, stripPillsRemainingAtStart: 6 }),
+    14
+  );
+
+  // Legacy non-strip record without packSize falls back to initialPills
+  assert.equal(getPackSize({ ...base, type: 'أقراص', initialPills: 60 }), 60);
+
+  // Invalid or zero values fall back to type default
+  assert.equal(getPackSize({ ...base, type: 'شريط', initialPills: 0 }), DEFAULT_STRIP_CAPACITY);
+  assert.equal(getPackSize({ ...base, type: 'أقراص', initialPills: 0 }), DEFAULT_PACK_SIZE);
+});
+
+test('calculateMedicationMetrics scales opened packs against packSize and clamps carry-over at 100%', () => {
+  const refDate = new Date(2026, 10, 11);
+
+  // Opened strip: 4 remaining out of 10-pill strip, started today
+  const openedStrip: Medicine = {
+    id: 'opened_1',
+    name: 'دواء مفتوح',
+    type: 'شريط',
+    packSize: 10,
+    initialPills: 4,
+    dailyDose: 1,
+    startDate: '2026-11-11',
+    courseType: 'chronic',
+    courseDays: null,
+    warningDays: 2,
+    notes: '',
+  };
+  const openedMetrics = calculateMedicationMetrics(openedStrip, refDate);
+  assert.equal(openedMetrics.packSize, 10);
+  assert.equal(openedMetrics.referenceCapacity, 10);
+  assert.equal(openedMetrics.currentPills, 4);
+  assert.equal(openedMetrics.daysRemaining, 4);
+  assert.equal(openedMetrics.percentage, 40);
+  assert.equal(isStartedOpened(openedStrip), true);
+
+  // After 2 days, 2 pills remain out of 10 (20%)
+  const twoDaysLater = calculateMedicationMetrics(openedStrip, new Date(2026, 10, 13));
+  assert.equal(twoDaysLater.currentPills, 2);
+  assert.equal(twoDaysLater.percentage, 20);
+  assert.equal(twoDaysLater.isUrgent, true);
+
+  // Carry-over refill: 12 starting pills on a 10-pill strip
+  const carriedOver: Medicine = {
+    ...openedStrip,
+    initialPills: 12,
+  };
+  const carryMetrics = calculateMedicationMetrics(carriedOver, refDate);
+  assert.equal(carryMetrics.packSize, 10);
+  assert.equal(carryMetrics.referenceCapacity, 12);
+  assert.equal(carryMetrics.percentage, 100);
+  assert.equal(isStartedOpened(carriedOver), false);
+
+  // Opened with more than 1 strip (e.g. 1 full strip + 4 loose pills = 14)
+  const multiStripOpened: Medicine = {
+    ...openedStrip,
+    initialPills: 14,
+  };
+  const multiMetrics = calculateMedicationMetrics(multiStripOpened, refDate);
+  assert.equal(multiMetrics.referenceCapacity, 14);
+  assert.equal(multiMetrics.percentage, 100);
+});
+
+test('resolveMedicineFormInventory validates packSize and opened remaining values cleanly', () => {
+  assert.deepEqual(resolveMedicineFormInventory(10, false), {
+    packSize: 10,
+    initialPills: 10,
+  });
+  assert.deepEqual(resolveMedicineFormInventory(10, true, 4.5), {
+    packSize: 10,
+    initialPills: 4.5,
+  });
+  // Allows starting balance > packSize (e.g. 1 full strip + 4 loose pills)
+  assert.deepEqual(resolveMedicineFormInventory(10, true, 14), {
+    packSize: 10,
+    initialPills: 14,
+  });
+
+  // Rejects invalid/non-positive numbers
+  assert.equal(resolveMedicineFormInventory(0, false), null);
+  assert.equal(resolveMedicineFormInventory(-5, false), null);
+  assert.equal(resolveMedicineFormInventory(Number.NaN, false), null);
+  assert.equal(resolveMedicineFormInventory(10, true, 0), null);
+  assert.equal(resolveMedicineFormInventory(10, true, -2), null);
+  assert.equal(resolveMedicineFormInventory(10, true, Number.NaN), null);
+});
+
+test('calculateRefillResult computes refill totals with carry-over, multipliers, and fallback', () => {
+  const refDate = new Date(2026, 10, 15);
+  const med: Medicine = {
+    id: 'refill_1',
+    name: 'دواء شريطي',
+    type: 'شريط',
+    packSize: 10,
+    initialPills: 4,
+    dailyDose: 1,
+    startDate: '2026-11-13', // 2 days elapsed -> 2 pills remaining
+    courseType: 'chronic',
+    courseDays: null,
+    warningDays: 3,
+    notes: '',
+  };
+
+  // Standard x1 refill with carry-over
+  assert.deepEqual(calculateRefillResult(med, 10, true, refDate), {
+    addedAmount: 10,
+    carriedOverPills: 2,
+    totalStartingPills: 12,
+  });
+
+  // x2 strips refill without carry-over
+  assert.deepEqual(calculateRefillResult(med, 20, false, refDate), {
+    addedAmount: 20,
+    carriedOverPills: 0,
+    totalStartingPills: 20,
+  });
+
+  // Invalid addedAmount falls back to saved packSize (10)
+  assert.deepEqual(calculateRefillResult(med, 0, true, refDate), {
+    addedAmount: 10,
+    carriedOverPills: 2,
+    totalStartingPills: 12,
+  });
+  assert.deepEqual(calculateRefillResult(med, Number.NaN, false, refDate), {
+    addedAmount: 10,
+    carriedOverPills: 0,
+    totalStartingPills: 10,
+  });
+
+  // Depleted medicine carries over 0 even if carryOver is true
+  const depletedDate = new Date(2026, 10, 20);
+  assert.deepEqual(calculateRefillResult(med, 10, true, depletedDate), {
+    addedAmount: 10,
+    carriedOverPills: 0,
+    totalStartingPills: 10,
+  });
+});
+
+test('updateMedicineInventory preserves explicit and legacy packSize across balance adjustments and refills', () => {
+  // Legacy non-strip record (packSize not yet saved) adjusted to 5 pills
+  const legacyPack: Medicine = {
+    id: 'legacy_box',
+    name: 'كونكور',
+    type: 'أقراص',
+    initialPills: 30,
+    dailyDose: 1,
+    startDate: '2026-11-01',
+    courseType: 'chronic',
+    courseDays: null,
+    warningDays: 3,
+    notes: '',
+  };
+  const adjustedLegacy = updateMedicineInventory(legacyPack, 5, '2026-11-20');
+  assert.equal(adjustedLegacy.initialPills, 5);
+  assert.equal(adjustedLegacy.packSize, 30);
+  assert.equal(getPackSize(adjustedLegacy), 30);
+  assert.deepEqual(adjustedLegacy.renewalAlertPlan, []);
+
+  // Legacy v1.0.10 strip record locks in stripCapacity (14) on update
   const legacyStrip: Medicine = {
-    id: 'strip_legacy',
+    id: 'legacy_strip',
     name: 'دواء شريطي قديم',
     type: 'شريط',
     initialPills: 28,
-    dailyDose: 1,
-    startDate: '2026-11-01',
-    courseType: 'chronic',
-    courseDays: null,
-    warningDays: 3,
-    notes: '',
-  };
-
-  assert.equal(getStripCapacity(legacyStrip), DEFAULT_STRIP_CAPACITY);
-  assert.equal(getStripPillsRemainingAtStart(legacyStrip), DEFAULT_STRIP_CAPACITY);
-  assert.equal(getStripDescription(legacyStrip), 'شريط حالي: 10 من 10 قرص');
-
-  const configuredStrip: Medicine = {
-    ...legacyStrip,
-    stripCapacity: 14,
-    stripPillsRemainingAtStart: 6,
-  };
-  assert.equal(getStripCapacity(configuredStrip), 14);
-  assert.equal(getStripPillsRemainingAtStart(configuredStrip), 6);
-  assert.equal(getStripDescription(configuredStrip), 'شريط حالي: 6 من 14 قرص');
-  assert.equal(getStripDescription({ ...configuredStrip, type: 'أقراص' }), null);
-});
-
-test('strip fields stay separate for each medicine and independent from pack inventory', () => {
-  const firstStrip: Medicine = {
-    id: 'strip_1',
-    name: 'شريط أ',
-    type: 'شريط',
-    initialPills: 28,
     stripCapacity: 14,
     stripPillsRemainingAtStart: 6,
     dailyDose: 1,
@@ -268,52 +429,38 @@ test('strip fields stay separate for each medicine and independent from pack inv
     warningDays: 3,
     notes: '',
   };
-  const secondStrip: Medicine = {
-    ...firstStrip,
-    id: 'strip_2',
-    name: 'شريط ب',
-    initialPills: 42,
-    stripCapacity: 10,
-    stripPillsRemainingAtStart: 3,
-  };
+  const refilledLegacyStrip = updateMedicineInventory(legacyStrip, 16, '2026-11-22');
+  assert.equal(refilledLegacyStrip.initialPills, 16);
+  assert.equal(refilledLegacyStrip.packSize, 14);
+  assert.equal(getPackSize(refilledLegacyStrip), 14);
 
-  assert.equal(getStripDescription(firstStrip), 'شريط حالي: 6 من 14 قرص');
-  assert.equal(getStripDescription(secondStrip), 'شريط حالي: 3 من 10 قرص');
-  assert.equal(firstStrip.initialPills, 28);
-  assert.equal(secondStrip.initialPills, 42);
-  assert.notEqual(firstStrip.stripCapacity, secondStrip.stripCapacity);
-  assert.notEqual(
-    firstStrip.stripPillsRemainingAtStart,
-    secondStrip.stripPillsRemainingAtStart
-  );
-
-  const legacyStrip: Medicine = {
-    ...firstStrip,
-    stripPillsRemainingAtStart: undefined,
-    actualStripPills: 8,
-  };
-  assert.equal(getStripPillsRemainingAtStart(legacyStrip), 8);
-});
-
-test('updating strip inventory preserves capacity and updates the actual strip count', () => {
-  const strip: Medicine = {
-    id: 'strip_refill',
-    name: 'دواء شريطي',
+  // Configured opened strip keeps packSize=10 after adjust (2) and carry-over refill (12)
+  const openedStrip: Medicine = {
+    id: 'opened_strip',
+    name: 'شريط مفتوح',
     type: 'شريط',
-    initialPills: 28,
-    stripCapacity: 14,
-    stripPillsRemainingAtStart: 14,
+    packSize: 10,
+    initialPills: 4,
     dailyDose: 1,
-    startDate: '2026-11-01',
+    startDate: '2026-11-20',
     courseType: 'chronic',
     courseDays: null,
     warningDays: 3,
     notes: '',
   };
+  const adjustedOpened = updateMedicineInventory(openedStrip, 2, '2026-11-22');
+  assert.equal(adjustedOpened.packSize, 10);
+  assert.equal(adjustedOpened.initialPills, 2);
 
-  const refilled = updateMedicineInventory(strip, 42, '2026-11-22', 8);
-  assert.equal(refilled.initialPills, 42);
-  assert.equal(refilled.stripCapacity, 14);
-  assert.equal(refilled.stripPillsRemainingAtStart, 8);
-  assert.deepEqual(refilled.renewalAlertPlan, []);
+  const refilledOpened = updateMedicineInventory(adjustedOpened, 12, '2026-11-22');
+  assert.equal(refilledOpened.packSize, 10);
+  assert.equal(refilledOpened.initialPills, 12);
+});
+
+test('getDefaultSampleMedicines initializes explicit packSize for every sample medicine', () => {
+  const samples = getDefaultSampleMedicines(Date.UTC(2026, 10, 27));
+  assert.ok(samples.length > 0);
+  for (const med of samples) {
+    assert.equal(med.packSize, med.initialPills);
+  }
 });

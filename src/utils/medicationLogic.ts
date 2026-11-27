@@ -11,6 +11,7 @@ export type CourseType = 'chronic' | 'fixed';
 
 export const DEFAULT_RENEWAL_ALERT_LIMIT = 5;
 export const RENEWAL_ALERT_LIMIT_OPTIONS = [1, 3, 5, 10] as const;
+export const DEFAULT_PACK_SIZE = 30;
 export const DEFAULT_STRIP_CAPACITY = 10;
 
 export const WEEKDAYS_AR = [
@@ -34,9 +35,11 @@ export interface Medicine {
   name: string;
   type: MedicineType | string;
   initialPills: number;
+  /** Standard full quantity per strip/pack used by default on renewal. */
+  packSize?: number;
+  /** Legacy compatibility fields from v1.0.9–v1.0.10. */
   stripCapacity?: number;
   stripPillsRemainingAtStart?: number;
-  /** Legacy compatibility for records saved before the strip fields were clarified. */
   actualStripPills?: number;
   dailyDose: number;
   startDate: string; // YYYY-MM-DD
@@ -63,12 +66,20 @@ export interface MedicationMetrics {
   consumedPills: number;
   currentPills: number;
   initialPills: number;
+  packSize: number;
+  referenceCapacity: number;
   daysRemaining: number;
   refillDateFormatted: string;
   percentage: number;
   isUrgent: boolean;
   isDepleted: boolean;
   courseInfo: CourseInfo | null;
+}
+
+export interface RefillCalculation {
+  addedAmount: number;
+  carriedOverPills: number;
+  totalStartingPills: number;
 }
 
 export const STORAGE_KEY = 'tiryaq_elderly_medicines_v4';
@@ -85,6 +96,53 @@ export function getRenewalAlertLimit(med: Medicine): number {
   return RENEWAL_ALERT_LIMIT_OPTIONS.some((option) => option === limit)
     ? limit
     : DEFAULT_RENEWAL_ALERT_LIMIT;
+}
+
+export function getDefaultPackSizeForType(type: string): number {
+  return type === 'شريط' ? DEFAULT_STRIP_CAPACITY : DEFAULT_PACK_SIZE;
+}
+
+export function getPackSize(med: Medicine): number {
+  const explicit = Number(med.packSize);
+  if (Number.isFinite(explicit) && explicit > 0) {
+    return explicit;
+  }
+  if (med.type === 'شريط') {
+    const legacyStrip = Number(med.stripCapacity);
+    if (Number.isFinite(legacyStrip) && legacyStrip > 0) {
+      return legacyStrip;
+    }
+  }
+  const fallbackInitial = Number(med.initialPills);
+  if (Number.isFinite(fallbackInitial) && fallbackInitial > 0) {
+    return fallbackInitial;
+  }
+  return getDefaultPackSizeForType(med.type);
+}
+
+export function isStartedOpened(med: Medicine): boolean {
+  const initial = Number(med.initialPills);
+  if (!Number.isFinite(initial) || initial < 0) return false;
+  return initial < getPackSize(med);
+}
+
+export function resolveMedicineFormInventory(
+  packSize: number,
+  isOpened: boolean,
+  openedRemaining?: number
+): { packSize: number; initialPills: number } | null {
+  if (!Number.isFinite(packSize) || packSize <= 0) return null;
+  if (!isOpened) {
+    return { packSize, initialPills: packSize };
+  }
+  if (
+    openedRemaining === undefined ||
+    !Number.isFinite(openedRemaining) ||
+    openedRemaining <= 0
+  ) {
+    return null;
+  }
+  return { packSize, initialPills: openedRemaining };
 }
 
 export function getStripCapacity(med: Medicine): number {
@@ -122,12 +180,31 @@ export function updateMedicineInventory(
 ): Medicine {
   return {
     ...med,
+    packSize: getPackSize(med),
     initialPills,
     startDate,
     renewalAlertPlan: [],
     ...(stripPillsRemainingAtStart !== undefined
       ? { stripPillsRemainingAtStart }
       : {}),
+  };
+}
+
+export function calculateRefillResult(
+  med: Medicine,
+  addedAmount: number,
+  carryOver: boolean,
+  referenceDate: Date = new Date()
+): RefillCalculation {
+  const safeAdded =
+    Number.isFinite(addedAmount) && addedAmount > 0 ? addedAmount : getPackSize(med);
+  const metrics = calculateMedicationMetrics(med, referenceDate);
+  const carriedOverPills =
+    carryOver && metrics.currentPills > 0 ? metrics.currentPills : 0;
+  return {
+    addedAmount: +safeAdded.toFixed(2),
+    carriedOverPills,
+    totalStartingPills: +(safeAdded + carriedOverPills).toFixed(2),
   };
 }
 
@@ -213,6 +290,7 @@ export function getDefaultSampleMedicines(nowMs: number = Date.now()): Medicine[
       id: 'med_' + nowMs + '_1',
       name: 'كونكور 5 مجم (Concor)',
       type: 'أقراص',
+      packSize: 30,
       initialPills: 30,
       dailyDose: 1,
       // بدأ منذ 27 يوماً (متبقي 3 حبات -> يدخل في التنبيه العاجل)
@@ -226,6 +304,7 @@ export function getDefaultSampleMedicines(nowMs: number = Date.now()): Medicine[
       id: 'med_' + nowMs + '_2',
       name: 'جلوكوفاج 1000 مجم (Glucophage)',
       type: 'أقراص',
+      packSize: 60,
       initialPills: 60,
       dailyDose: 2,
       // بدأ منذ 15 يوماً (متبقي 30 حبة تكفي 15 يوماً -> مستقر)
@@ -239,6 +318,7 @@ export function getDefaultSampleMedicines(nowMs: number = Date.now()): Medicine[
       id: 'med_' + nowMs + '_3',
       name: 'أوجمنتين 1 جم (Augmentin)',
       type: 'أقراص',
+      packSize: 14,
       initialPills: 14,
       dailyDose: 2,
       startDate: new Date(nowMs - 4 * dayMs).toISOString().split('T')[0],
@@ -254,7 +334,11 @@ export function calculateMedicationMetrics(
   med: Medicine,
   referenceDate: Date = new Date()
 ): MedicationMetrics {
-  const initialPills = Number(med.initialPills) || 30;
+  const parsedInitial = Number(med.initialPills);
+  const initialPills =
+    Number.isFinite(parsedInitial) && parsedInitial >= 0 ? parsedInitial : DEFAULT_PACK_SIZE;
+  const packSize = getPackSize(med);
+  const referenceCapacity = Math.max(initialPills, packSize);
   const dailyDose = Number(med.dailyDose) || 1;
   const warningDays = Number(med.warningDays) || 3;
 
@@ -298,8 +382,8 @@ export function calculateMedicationMetrics(
   });
 
   const percentage =
-    initialPills > 0
-      ? Math.min(100, Math.max(0, Math.round((currentPills / initialPills) * 100)))
+    referenceCapacity > 0
+      ? Math.min(100, Math.max(0, Math.round((currentPills / referenceCapacity) * 100)))
       : 0;
   const isDepleted = currentPills <= 0;
   const isUrgent = isDepleted || daysRemaining <= warningDays;
@@ -324,6 +408,8 @@ export function calculateMedicationMetrics(
     consumedPills,
     currentPills,
     initialPills,
+    packSize,
+    referenceCapacity,
     daysRemaining,
     refillDateFormatted,
     percentage,
