@@ -317,6 +317,17 @@ test('calculateMedicationMetrics scales opened packs against packSize and clamps
   const multiMetrics = calculateMedicationMetrics(multiStripOpened, refDate);
   assert.equal(multiMetrics.referenceCapacity, 14);
   assert.equal(multiMetrics.percentage, 100);
+
+  // Depleted/zero-adjusted medicine should NOT be labeled as started-opened
+  const zeroAdjusted: Medicine = {
+    ...openedStrip,
+    packSize: 30,
+    initialPills: 0,
+  };
+  assert.equal(isStartedOpened(zeroAdjusted), false);
+  const zeroMetrics = calculateMedicationMetrics(zeroAdjusted, refDate);
+  assert.equal(zeroMetrics.currentPills, 0);
+  assert.equal(zeroMetrics.isDepleted, true);
 });
 
 test('resolveMedicineFormInventory validates packSize and opened remaining values cleanly', () => {
@@ -328,19 +339,53 @@ test('resolveMedicineFormInventory validates packSize and opened remaining value
     packSize: 10,
     initialPills: 4.5,
   });
+  // Supports quarter-tablet doses (.25 / .75)
+  assert.deepEqual(resolveMedicineFormInventory(10, true, 1.25), {
+    packSize: 10,
+    initialPills: 1.25,
+  });
   // Allows starting balance > packSize (e.g. 1 full strip + 4 loose pills)
   assert.deepEqual(resolveMedicineFormInventory(10, true, 14), {
     packSize: 10,
     initialPills: 14,
   });
 
-  // Rejects invalid/non-positive numbers
+  // Edit mode preserves existingInitialPills when cycle balance is not explicitly overridden
+  assert.deepEqual(
+    resolveMedicineFormInventory(30, false, undefined, { existingInitialPills: 10 }),
+    { packSize: 30, initialPills: 10 }
+  );
+  assert.deepEqual(
+    resolveMedicineFormInventory(30, false, undefined, { existingInitialPills: 0 }),
+    { packSize: 30, initialPills: 0 }
+  );
+  assert.deepEqual(
+    resolveMedicineFormInventory(10, false, undefined, { existingInitialPills: 19.75 }),
+    { packSize: 10, initialPills: 19.75 }
+  );
+  // Edit mode allows explicitly setting cycle balance to 0 or .25 increments
+  assert.deepEqual(
+    resolveMedicineFormInventory(30, true, 0, { existingInitialPills: 5 }),
+    { packSize: 30, initialPills: 0 }
+  );
+  assert.deepEqual(
+    resolveMedicineFormInventory(10, true, 19.75, { existingInitialPills: 10 }),
+    { packSize: 10, initialPills: 19.75 }
+  );
+
+  // Rejects invalid/non-positive/rounds-to-zero numbers in Add mode and negative in Edit mode
   assert.equal(resolveMedicineFormInventory(0, false), null);
+  assert.equal(resolveMedicineFormInventory(0.004, false), null);
   assert.equal(resolveMedicineFormInventory(-5, false), null);
   assert.equal(resolveMedicineFormInventory(Number.NaN, false), null);
   assert.equal(resolveMedicineFormInventory(10, true, 0), null);
+  assert.equal(resolveMedicineFormInventory(10, true, 0.004), null);
   assert.equal(resolveMedicineFormInventory(10, true, -2), null);
   assert.equal(resolveMedicineFormInventory(10, true, Number.NaN), null);
+  assert.equal(
+    resolveMedicineFormInventory(10, true, -1, { existingInitialPills: 5 }),
+    null
+  );
 });
 
 test('calculateRefillResult computes refill totals with carry-over, multipliers, and fallback', () => {
@@ -373,17 +418,33 @@ test('calculateRefillResult computes refill totals with carry-over, multipliers,
     totalStartingPills: 20,
   });
 
-  // Invalid addedAmount falls back to saved packSize (10)
+  // Invalid or rounds-to-zero addedAmount falls back to saved packSize (10)
   assert.deepEqual(calculateRefillResult(med, 0, true, refDate), {
     addedAmount: 10,
     carriedOverPills: 2,
     totalStartingPills: 12,
+  });
+  assert.deepEqual(calculateRefillResult(med, 0.004, false, refDate), {
+    addedAmount: 10,
+    carriedOverPills: 0,
+    totalStartingPills: 10,
   });
   assert.deepEqual(calculateRefillResult(med, Number.NaN, false, refDate), {
     addedAmount: 10,
     carriedOverPills: 0,
     totalStartingPills: 10,
   });
+
+  // Rounding consistency: addedAmount + carriedOverPills === totalStartingPills (no 10 + 1 = 11.01 drift)
+  const onePillLeftMed: Medicine = {
+    ...med,
+    initialPills: 3, // 2 days elapsed -> 1 pill remaining
+  };
+  const roundingCheck = calculateRefillResult(onePillLeftMed, 10.005, true, refDate);
+  assert.equal(
+    +(roundingCheck.addedAmount + roundingCheck.carriedOverPills).toFixed(2),
+    roundingCheck.totalStartingPills
+  );
 
   // Depleted medicine carries over 0 even if carryOver is true
   const depletedDate = new Date(2026, 10, 20);

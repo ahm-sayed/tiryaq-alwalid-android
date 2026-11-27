@@ -122,27 +122,43 @@ export function getPackSize(med: Medicine): number {
 
 export function isStartedOpened(med: Medicine): boolean {
   const initial = Number(med.initialPills);
-  if (!Number.isFinite(initial) || initial < 0) return false;
+  if (!Number.isFinite(initial) || initial <= 0) return false;
   return initial < getPackSize(med);
 }
 
 export function resolveMedicineFormInventory(
   packSize: number,
   isOpened: boolean,
-  openedRemaining?: number
+  openedRemaining?: number,
+  options?: { existingInitialPills?: number }
 ): { packSize: number; initialPills: number } | null {
-  if (!Number.isFinite(packSize) || packSize <= 0) return null;
-  if (!isOpened) {
-    return { packSize, initialPills: packSize };
+  const roundedPack = Number.isFinite(packSize) ? +packSize.toFixed(2) : 0;
+  if (roundedPack <= 0) return null;
+
+  const isEditMode = options?.existingInitialPills !== undefined;
+  if (isEditMode) {
+    if (!isOpened) {
+      const preserved = Number(options.existingInitialPills);
+      const safePreserved = Number.isFinite(preserved) && preserved >= 0 ? +preserved.toFixed(2) : 0;
+      return { packSize: roundedPack, initialPills: safePreserved };
+    }
+    if (openedRemaining === undefined || !Number.isFinite(openedRemaining) || openedRemaining < 0) {
+      return null;
+    }
+    return { packSize: roundedPack, initialPills: +openedRemaining.toFixed(2) };
   }
-  if (
-    openedRemaining === undefined ||
-    !Number.isFinite(openedRemaining) ||
-    openedRemaining <= 0
-  ) {
+
+  if (!isOpened) {
+    return { packSize: roundedPack, initialPills: roundedPack };
+  }
+  const roundedOpened =
+    openedRemaining !== undefined && Number.isFinite(openedRemaining)
+      ? +openedRemaining.toFixed(2)
+      : 0;
+  if (roundedOpened <= 0) {
     return null;
   }
-  return { packSize, initialPills: openedRemaining };
+  return { packSize: roundedPack, initialPills: roundedOpened };
 }
 
 export function updateMedicineInventory(
@@ -165,15 +181,15 @@ export function calculateRefillResult(
   carryOver: boolean,
   referenceDate: Date = new Date()
 ): RefillCalculation {
-  const safeAdded =
-    Number.isFinite(addedAmount) && addedAmount > 0 ? addedAmount : getPackSize(med);
+  const parsedAdded = Number.isFinite(addedAmount) ? +addedAmount.toFixed(2) : 0;
+  const roundedAdded = parsedAdded > 0 ? parsedAdded : +getPackSize(med).toFixed(2);
   const metrics = calculateMedicationMetrics(med, referenceDate);
   const carriedOverPills =
     carryOver && metrics.currentPills > 0 ? metrics.currentPills : 0;
   return {
-    addedAmount: +safeAdded.toFixed(2),
+    addedAmount: roundedAdded,
     carriedOverPills,
-    totalStartingPills: +(safeAdded + carriedOverPills).toFixed(2),
+    totalStartingPills: +(roundedAdded + carriedOverPills).toFixed(2),
   };
 }
 

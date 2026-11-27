@@ -55,32 +55,41 @@ export const MedicineFormModal: React.FC<AddEditModalProps> = ({
   const [notes, setNotes] = useState('');
   const [formError, setFormError] = useState<string | null>(null);
 
+  const nameInputRef = useRef<HTMLInputElement | null>(null);
   const packSizeInputRef = useRef<HTMLInputElement | null>(null);
   const openedRemainingInputRef = useRef<HTMLInputElement | null>(null);
   const dailyDoseInputRef = useRef<HTMLInputElement | null>(null);
+  const courseDaysInputRef = useRef<HTMLInputElement | null>(null);
+  const editingMedicineRef = useRef<Medicine | null>(editingMedicine);
+  editingMedicineRef.current = editingMedicine;
+
+  const editingMedId = editingMedicine?.id ?? null;
 
   useEffect(() => {
     if (!isOpen) return;
+    const target = editingMedicineRef.current;
     const today = formatIsoDate();
     setFormError(null);
-    if (editingMedicine) {
-      const savedPackSize = getPackSize(editingMedicine);
-      const differsFromPack = editingMedicine.initialPills !== savedPackSize;
-      setName(editingMedicine.name);
-      setType(editingMedicine.type || 'أقراص');
+    if (target) {
+      const savedPackSize = getPackSize(target);
+      const parsedInitial = Number(target.initialPills);
+      const normalizedInitial =
+        Number.isFinite(parsedInitial) && parsedInitial >= 0 ? parsedInitial : savedPackSize;
+      setName(target.name);
+      setType(target.type || 'أقراص');
       setPackSize(String(savedPackSize));
       setHasCustomPackSize(true);
-      setIsOpened(differsFromPack);
-      setOpenedRemaining(String(editingMedicine.initialPills));
-      setDailyDose(String(editingMedicine.dailyDose || 1));
-      setStartDate(editingMedicine.startDate || today);
-      const editingCourseType = editingMedicine.courseType || 'chronic';
+      setIsOpened(false);
+      setOpenedRemaining(String(normalizedInitial));
+      setDailyDose(String(target.dailyDose || 1));
+      setStartDate(target.startDate || today);
+      const editingCourseType = target.courseType || 'chronic';
       setCourseType(editingCourseType);
-      setCourseDays(editingMedicine.courseDays ? String(editingMedicine.courseDays) : '');
-      setOffDays(editingCourseType === 'chronic' ? editingMedicine.offDays || [] : []);
-      setWarningDays(editingMedicine.warningDays || 3);
-      setRenewalAlertLimit(getRenewalAlertLimit(editingMedicine));
-      setNotes(editingMedicine.notes || '');
+      setCourseDays(target.courseDays ? String(target.courseDays) : '');
+      setOffDays(editingCourseType === 'chronic' ? target.offDays || [] : []);
+      setWarningDays(target.warningDays || 3);
+      setRenewalAlertLimit(getRenewalAlertLimit(target));
+      setNotes(target.notes || '');
     } else {
       setName('');
       setType('أقراص');
@@ -97,9 +106,16 @@ export const MedicineFormModal: React.FC<AddEditModalProps> = ({
       setRenewalAlertLimit(DEFAULT_RENEWAL_ALERT_LIMIT);
       setNotes('');
     }
-  }, [isOpen, editingMedicine]);
+  }, [isOpen, editingMedId]);
 
   if (!isOpen) return null;
+
+  const normalizedEditingInitial = editingMedicine
+    ? Number.isFinite(Number(editingMedicine.initialPills)) &&
+      Number(editingMedicine.initialPills) >= 0
+      ? Number(editingMedicine.initialPills)
+      : getPackSize(editingMedicine)
+    : undefined;
 
   const handleTypeChange = (nextType: string) => {
     setType(nextType);
@@ -117,10 +133,11 @@ export const MedicineFormModal: React.FC<AddEditModalProps> = ({
 
     if (!trimmedName) {
       setFormError('يرجى إدخال اسم الدواء.');
+      nameInputRef.current?.focus();
       return;
     }
 
-    if (!Number.isFinite(parsedPackSize) || parsedPackSize <= 0) {
+    if (!Number.isFinite(parsedPackSize) || +parsedPackSize.toFixed(2) <= 0) {
       setFormError('يرجى إدخال سعة كاملة صالحة للشريط أو العبوة (أكبر من صفر).');
       packSizeInputRef.current?.focus();
       return;
@@ -129,10 +146,17 @@ export const MedicineFormModal: React.FC<AddEditModalProps> = ({
     const inventory = resolveMedicineFormInventory(
       parsedPackSize,
       isOpened,
-      isOpened ? parsedOpenedRemaining : undefined
+      isOpened ? parsedOpenedRemaining : undefined,
+      normalizedEditingInitial !== undefined
+        ? { existingInitialPills: normalizedEditingInitial }
+        : undefined
     );
     if (!inventory) {
-      setFormError('يرجى إدخال الكمية المتبقية حالياً في الدواء المفتوح (أكبر من صفر).');
+      setFormError(
+        editingMedicine
+          ? 'يرجى إدخال رصيد بداية صالح لهذه الدورة (صفر أو أكثر).'
+          : 'يرجى إدخال الكمية المتبقية حالياً في الدواء المفتوح (أكبر من صفر).'
+      );
       openedRemainingInputRef.current?.focus();
       return;
     }
@@ -141,6 +165,15 @@ export const MedicineFormModal: React.FC<AddEditModalProps> = ({
       setFormError('يرجى إدخال معدل استهلاك يومي صالح (أكبر من صفر).');
       dailyDoseInputRef.current?.focus();
       return;
+    }
+
+    if (courseType === 'fixed') {
+      const parsedCourseDays = parseInt(courseDays, 10);
+      if (!Number.isFinite(parsedCourseDays) || parsedCourseDays < 1) {
+        setFormError('يرجى إدخال مدة الكورس الإجمالية بالأيام (يوم واحد على الأقل).');
+        courseDaysInputRef.current?.focus();
+        return;
+      }
     }
 
     setFormError(null);
@@ -195,6 +228,7 @@ export const MedicineFormModal: React.FC<AddEditModalProps> = ({
         {/* نموذج البيانات التلقائي */}
         <form
           id="medicineForm"
+          noValidate
           aria-labelledby="modalTitle"
           onSubmit={handleSubmit}
           className="p-6 space-y-4 max-h-[80vh] overflow-y-auto"
@@ -223,6 +257,7 @@ export const MedicineFormModal: React.FC<AddEditModalProps> = ({
                 اسم الدواء والتركيز <span className="text-rose-500" aria-hidden="true">*</span>
               </label>
               <input
+                ref={nameInputRef}
                 type="text"
                 id="medName"
                 name="name"
@@ -270,8 +305,8 @@ export const MedicineFormModal: React.FC<AddEditModalProps> = ({
                 id="medPackSize"
                 name="packSize"
                 inputMode="decimal"
-                min="0.5"
-                step="0.5"
+                min="0.01"
+                step="any"
                 required
                 aria-describedby="medPackSizeHelp"
                 value={packSize}
@@ -328,8 +363,8 @@ export const MedicineFormModal: React.FC<AddEditModalProps> = ({
                 onChange={(e) => {
                   const checked = e.target.checked;
                   setIsOpened(checked);
-                  if (checked && !openedRemaining && editingMedicine) {
-                    setOpenedRemaining(String(editingMedicine.initialPills));
+                  if (checked && !openedRemaining && normalizedEditingInitial !== undefined) {
+                    setOpenedRemaining(String(normalizedEditingInitial));
                   }
                   if (formError) setFormError(null);
                 }}
@@ -338,11 +373,13 @@ export const MedicineFormModal: React.FC<AddEditModalProps> = ({
               <label htmlFor="medIsOpened" className="cursor-pointer select-none flex-1">
                 <span className="block text-xs font-extrabold text-violet-950">
                   {editingMedicine
-                    ? 'رصيد بداية هذه الدورة مختلف عن السعة الكاملة (مفتوح / معدّل)'
+                    ? `تعديل رصيد بداية هذه الدورة (الحالي: ${normalizedEditingInitial})`
                     : 'الدواء مفتوح حالياً (بدأ الاستخدام منه بالفعل)'}
                 </span>
                 <span className="text-[11px] text-violet-800 block mt-0.5">
-                  فعّل هذا الخيار لإدخال الكمية المتبقية الفعلية الآن مع احتفاظ التطبيق بالسعة الكاملة أعلاه عند التجديد.
+                  {editingMedicine
+                    ? 'اتركه غير مفعّل لحفظ تعديلات السعة الكاملة أو البيانات بدون تغيير العدّاد الحالي.'
+                    : 'فعّل هذا الخيار لإدخال الكمية المتبقية الفعلية الآن مع احتفاظ التطبيق بالسعة الكاملة أعلاه عند التجديد.'}
                 </span>
               </label>
             </div>
@@ -365,8 +402,8 @@ export const MedicineFormModal: React.FC<AddEditModalProps> = ({
                   id="medOpenedRemaining"
                   name="openedRemaining"
                   inputMode="decimal"
-                  min="0.5"
-                  step="0.5"
+                  min={editingMedicine ? '0' : '0.01'}
+                  step="any"
                   required={isOpened}
                   aria-describedby="medOpenedRemainingHelp"
                   value={openedRemaining}
@@ -472,12 +509,16 @@ export const MedicineFormModal: React.FC<AddEditModalProps> = ({
               </label>
               <div className="flex items-center gap-2">
                 <input
+                  ref={courseDaysInputRef}
                   type="number"
                   id="medCourseDays"
                   min="1"
                   required
                   value={courseDays}
-                  onChange={(e) => setCourseDays(e.target.value)}
+                  onChange={(e) => {
+                    setCourseDays(e.target.value);
+                    if (formError) setFormError(null);
+                  }}
                   placeholder="مثلاً: 7 أو 14 يوماً"
                   className="w-full px-3 py-2 rounded-xl border border-purple-300 focus:border-purple-500 text-sm font-bold outline-none bg-white"
                 />
@@ -601,33 +642,38 @@ export const QuickRefillModal: React.FC<QuickRefillModalProps> = ({
   const [carryOver, setCarryOver] = useState<boolean>(true);
   const [refillError, setRefillError] = useState<string | null>(null);
   const refillInputRef = useRef<HTMLInputElement | null>(null);
+  const medicineRef = useRef<Medicine | null>(medicine);
+  medicineRef.current = medicine;
+  const medicineId = medicine?.id ?? null;
 
   useEffect(() => {
-    if (medicine) {
-      setPackCount(String(getPackSize(medicine)));
+    const target = medicineRef.current;
+    if (target) {
+      setPackCount(String(getPackSize(target)));
       setCarryOver(true);
       setRefillError(null);
     }
-  }, [medicine]);
+  }, [medicineId]);
 
   if (!medicine) return null;
 
   const standardPackSize = getPackSize(medicine);
   const metrics = calculateMedicationMetrics(medicine);
   const parsedAmount = parseFloat(packCount);
-  const isValidAmount = Number.isFinite(parsedAmount) && parsedAmount > 0;
+  const isValidAmount = Number.isFinite(parsedAmount) && +parsedAmount.toFixed(2) > 0;
   const preview = isValidAmount
     ? calculateRefillResult(medicine, parsedAmount, carryOver)
     : null;
 
-  const handleConfirm = () => {
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
     if (!isValidAmount) {
       setRefillError('يرجى إدخال كمية تجديد صالحة (أكبر من صفر).');
       refillInputRef.current?.focus();
       return;
     }
     setRefillError(null);
-    onConfirm(medicine.id, parsedAmount, carryOver);
+    onConfirm(medicine.id, +parsedAmount.toFixed(2), carryOver);
   };
 
   return (
@@ -638,7 +684,11 @@ export const QuickRefillModal: React.FC<QuickRefillModalProps> = ({
       aria-labelledby="quickRefillTitle"
       className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4"
     >
-      <div className="bg-white rounded-3xl max-w-md w-full shadow-2xl border border-slate-100 overflow-hidden p-6 space-y-4">
+      <form
+        noValidate
+        onSubmit={handleSubmit}
+        className="bg-white rounded-3xl max-w-md w-full shadow-2xl border border-slate-100 overflow-hidden p-6 space-y-4"
+      >
         <div className="w-14 h-14 bg-emerald-100 text-emerald-600 rounded-2xl flex items-center justify-center text-2xl mx-auto shadow-inner">
           <i className="fa-solid fa-cart-shopping"></i>
         </div>
@@ -696,8 +746,8 @@ export const QuickRefillModal: React.FC<QuickRefillModalProps> = ({
               id="refillPillCountInput"
               name="refillAmount"
               inputMode="decimal"
-              min="0.5"
-              step="0.5"
+              min="0.01"
+              step="any"
               aria-describedby="refillPackSizeHint"
               aria-invalid={refillError ? 'true' : undefined}
               value={packCount}
@@ -760,15 +810,14 @@ export const QuickRefillModal: React.FC<QuickRefillModalProps> = ({
             إلغاء
           </button>
           <button
-            type="button"
-            onClick={handleConfirm}
+            type="submit"
             className="w-1/2 min-h-11 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-extrabold text-xs shadow-md transition flex items-center justify-center gap-1.5"
           >
             <i className="fa-solid fa-check"></i>
             <span>تأكيد التجديد الآن</span>
           </button>
         </div>
-      </div>
+      </form>
     </div>
   );
 };
@@ -785,15 +834,25 @@ export const AdjustBalanceModal: React.FC<AdjustBalanceModalProps> = ({
   onConfirm,
 }) => {
   const [actualCount, setActualCount] = useState<string>('0');
+  const medicineRef = useRef<Medicine | null>(medicine);
+  medicineRef.current = medicine;
+  const medicineId = medicine?.id ?? null;
 
   useEffect(() => {
-    if (medicine) {
-      const metrics = calculateMedicationMetrics(medicine);
+    const target = medicineRef.current;
+    if (target) {
+      const metrics = calculateMedicationMetrics(target);
       setActualCount(String(metrics.currentPills));
     }
-  }, [medicine]);
+  }, [medicineId]);
 
   if (!medicine) return null;
+
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    const parsed = parseFloat(actualCount);
+    onConfirm(medicine.id, Number.isFinite(parsed) && parsed >= 0 ? +parsed.toFixed(2) : 0);
+  };
 
   return (
     <div
@@ -802,7 +861,11 @@ export const AdjustBalanceModal: React.FC<AdjustBalanceModalProps> = ({
       aria-modal="true"
       className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4"
     >
-      <div className="bg-white rounded-3xl max-w-md w-full shadow-2xl border border-slate-100 overflow-hidden p-6 space-y-4">
+      <form
+        noValidate
+        onSubmit={handleSubmit}
+        className="bg-white rounded-3xl max-w-md w-full shadow-2xl border border-slate-100 overflow-hidden p-6 space-y-4"
+      >
         <div className="w-14 h-14 bg-amber-100 text-amber-600 rounded-2xl flex items-center justify-center text-2xl mx-auto shadow-inner">
           <i className="fa-solid fa-sliders"></i>
         </div>
@@ -828,7 +891,7 @@ export const AdjustBalanceModal: React.FC<AdjustBalanceModalProps> = ({
             name="actualCount"
             inputMode="decimal"
             min="0"
-            step="0.5"
+            step="any"
             aria-describedby="adjustPackSizeKeepHint"
             value={actualCount}
             onChange={(e) => setActualCount(e.target.value)}
@@ -843,20 +906,19 @@ export const AdjustBalanceModal: React.FC<AdjustBalanceModalProps> = ({
           <button
             type="button"
             onClick={onClose}
-            className="w-1/2 py-2.5 rounded-xl border border-slate-300 text-slate-600 font-bold text-xs hover:bg-slate-50 transition"
+            className="w-1/2 min-h-11 py-2.5 rounded-xl border border-slate-300 text-slate-600 font-bold text-xs hover:bg-slate-50 transition"
           >
             إلغاء
           </button>
           <button
-            type="button"
-            onClick={() => onConfirm(medicine.id, Math.max(0, parseFloat(actualCount) || 0))}
-            className="w-1/2 py-2.5 rounded-xl bg-amber-600 hover:bg-amber-700 text-white font-extrabold text-xs shadow-md transition flex items-center justify-center gap-1.5"
+            type="submit"
+            className="w-1/2 min-h-11 py-2.5 rounded-xl bg-amber-600 hover:bg-amber-700 text-white font-extrabold text-xs shadow-md transition flex items-center justify-center gap-1.5"
           >
             <i className="fa-solid fa-arrows-rotate"></i>
             <span>تطبيق المزامنة فوراً</span>
           </button>
         </div>
-      </div>
+      </form>
     </div>
   );
 };
