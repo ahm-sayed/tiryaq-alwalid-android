@@ -1,17 +1,28 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   calculateMedicationMetrics,
+  calculateRefillResult,
+  DEFAULT_PACK_SIZE,
   DEFAULT_RENEWAL_ALERT_LIMIT,
-  DEFAULT_STRIP_CAPACITY,
   formatIsoDate,
+  getDefaultPackSizeForType,
+  getPackSize,
   getRenewalAlertLimit,
-  getStripPillsRemainingAtStart,
-  getStripCapacity,
   RENEWAL_ALERT_LIMIT_OPTIONS,
+  resolveMedicineFormInventory,
   WEEKDAYS_AR,
   type CourseType,
   type Medicine,
 } from '../utils/medicationLogic';
+
+function formatMultiplierLabel(type: string, multiplier: number, total: number): string {
+  if (type === 'شريط') {
+    if (multiplier === 1) return `شريط (${total})`;
+    if (multiplier === 2) return `شريطين (${total})`;
+    return `${multiplier} شرائط (${total})`;
+  }
+  return `×${multiplier} (${total})`;
+}
 
 interface AddEditModalProps {
   isOpen: boolean;
@@ -28,11 +39,10 @@ export const MedicineFormModal: React.FC<AddEditModalProps> = ({
 }) => {
   const [name, setName] = useState('');
   const [type, setType] = useState('أقراص');
-  const [initialPills, setInitialPills] = useState<string>('30');
-  const [stripCapacity, setStripCapacity] = useState<string>(String(DEFAULT_STRIP_CAPACITY));
-  const [stripPillsRemainingAtStart, setStripPillsRemainingAtStart] = useState<string>(
-    String(DEFAULT_STRIP_CAPACITY)
-  );
+  const [packSize, setPackSize] = useState<string>(String(DEFAULT_PACK_SIZE));
+  const [hasCustomPackSize, setHasCustomPackSize] = useState<boolean>(false);
+  const [isOpened, setIsOpened] = useState<boolean>(false);
+  const [openedRemaining, setOpenedRemaining] = useState<string>('');
   const [dailyDose, setDailyDose] = useState<string>('1');
   const [startDate, setStartDate] = useState<string>(formatIsoDate());
   const [courseType, setCourseType] = useState<CourseType>('chronic');
@@ -43,18 +53,25 @@ export const MedicineFormModal: React.FC<AddEditModalProps> = ({
     DEFAULT_RENEWAL_ALERT_LIMIT
   );
   const [notes, setNotes] = useState('');
+  const [formError, setFormError] = useState<string | null>(null);
+
+  const packSizeInputRef = useRef<HTMLInputElement | null>(null);
+  const openedRemainingInputRef = useRef<HTMLInputElement | null>(null);
+  const dailyDoseInputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
     if (!isOpen) return;
     const today = formatIsoDate();
+    setFormError(null);
     if (editingMedicine) {
+      const savedPackSize = getPackSize(editingMedicine);
+      const differsFromPack = editingMedicine.initialPills !== savedPackSize;
       setName(editingMedicine.name);
       setType(editingMedicine.type || 'أقراص');
-      setInitialPills(String(editingMedicine.initialPills || 30));
-      setStripCapacity(String(getStripCapacity(editingMedicine)));
-      setStripPillsRemainingAtStart(
-        String(getStripPillsRemainingAtStart(editingMedicine))
-      );
+      setPackSize(String(savedPackSize));
+      setHasCustomPackSize(true);
+      setIsOpened(differsFromPack);
+      setOpenedRemaining(String(editingMedicine.initialPills));
       setDailyDose(String(editingMedicine.dailyDose || 1));
       setStartDate(editingMedicine.startDate || today);
       const editingCourseType = editingMedicine.courseType || 'chronic';
@@ -67,9 +84,10 @@ export const MedicineFormModal: React.FC<AddEditModalProps> = ({
     } else {
       setName('');
       setType('أقراص');
-      setInitialPills('30');
-      setStripCapacity(String(DEFAULT_STRIP_CAPACITY));
-      setStripPillsRemainingAtStart(String(DEFAULT_STRIP_CAPACITY));
+      setPackSize(String(DEFAULT_PACK_SIZE));
+      setHasCustomPackSize(false);
+      setIsOpened(false);
+      setOpenedRemaining('');
       setDailyDose('1');
       setStartDate(today);
       setCourseType('chronic');
@@ -83,35 +101,55 @@ export const MedicineFormModal: React.FC<AddEditModalProps> = ({
 
   if (!isOpen) return null;
 
+  const handleTypeChange = (nextType: string) => {
+    setType(nextType);
+    if (!editingMedicine && !hasCustomPackSize) {
+      setPackSize(String(getDefaultPackSizeForType(nextType)));
+    }
+  };
+
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     const trimmedName = name.trim();
-    const parsedInitial = parseFloat(initialPills);
-    const parsedStripCapacity = parseFloat(stripCapacity);
-    const parsedStripPillsRemainingAtStart = parseFloat(stripPillsRemainingAtStart);
+    const parsedPackSize = parseFloat(packSize);
+    const parsedOpenedRemaining = parseFloat(openedRemaining);
     const parsedDose = parseFloat(dailyDose);
-    if (!trimmedName || isNaN(parsedInitial) || parsedInitial <= 0 || isNaN(parsedDose) || parsedDose <= 0) {
+
+    if (!trimmedName) {
+      setFormError('يرجى إدخال اسم الدواء.');
       return;
     }
 
+    if (!Number.isFinite(parsedPackSize) || parsedPackSize <= 0) {
+      setFormError('يرجى إدخال سعة كاملة صالحة للشريط أو العبوة (أكبر من صفر).');
+      packSizeInputRef.current?.focus();
+      return;
+    }
+
+    const inventory = resolveMedicineFormInventory(
+      parsedPackSize,
+      isOpened,
+      isOpened ? parsedOpenedRemaining : undefined
+    );
+    if (!inventory) {
+      setFormError('يرجى إدخال الكمية المتبقية حالياً في الدواء المفتوح (أكبر من صفر).');
+      openedRemainingInputRef.current?.focus();
+      return;
+    }
+
+    if (!Number.isFinite(parsedDose) || parsedDose <= 0) {
+      setFormError('يرجى إدخال معدل استهلاك يومي صالح (أكبر من صفر).');
+      dailyDoseInputRef.current?.focus();
+      return;
+    }
+
+    setFormError(null);
     onSave(
       {
         name: trimmedName,
         type,
-        initialPills: parsedInitial,
-        ...(type === 'شريط'
-          ? {
-              stripCapacity:
-                Number.isFinite(parsedStripCapacity) && parsedStripCapacity > 0
-                  ? parsedStripCapacity
-                  : DEFAULT_STRIP_CAPACITY,
-              stripPillsRemainingAtStart:
-                Number.isFinite(parsedStripPillsRemainingAtStart) &&
-                parsedStripPillsRemainingAtStart >= 0
-                  ? parsedStripPillsRemainingAtStart
-                  : DEFAULT_STRIP_CAPACITY,
-            }
-          : {}),
+        packSize: inventory.packSize,
+        initialPills: inventory.initialPills,
         dailyDose: parsedDose,
         startDate: startDate || formatIsoDate(),
         courseType,
@@ -157,30 +195,45 @@ export const MedicineFormModal: React.FC<AddEditModalProps> = ({
         {/* نموذج البيانات التلقائي */}
         <form
           id="medicineForm"
+          aria-labelledby="modalTitle"
           onSubmit={handleSubmit}
           className="p-6 space-y-4 max-h-[80vh] overflow-y-auto"
         >
           <div className="bg-emerald-50 border border-emerald-200 text-emerald-900 p-3 rounded-2xl text-xs flex items-center gap-2.5 font-semibold">
             <i className="fa-solid fa-circle-check text-emerald-600 text-base shrink-0"></i>
             <span>
-              حساب ذاتي 100%: التطبيق سيحسب المستهلك والمتبقي وتاريخ النفاد تلقائياً من تاريخ البدء
-              دون الحاجة لتسجيل جرعة يومية يدوياً.
+              حساب ذاتي 100%: التطبيق يحفظ السعة الكاملة للشريط أو العبوة عند التجديد، ويمكنك إدخال
+              الكمية المتبقية فقط إذا كان الدواء مفتوحاً الآن.
             </span>
           </div>
+
+          {formError && (
+            <div
+              role="alert"
+              className="bg-rose-50 border border-rose-300 text-rose-800 px-3.5 py-2.5 rounded-2xl text-xs font-bold flex items-center gap-2"
+            >
+              <i className="fa-solid fa-circle-exclamation text-rose-600 shrink-0"></i>
+              <span>{formError}</span>
+            </div>
+          )}
 
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
             <div className="sm:col-span-2 space-y-1">
               <label htmlFor="medName" className="block text-xs font-bold text-slate-700">
-                اسم الدواء والتركيز <span className="text-rose-500">*</span>
+                اسم الدواء والتركيز <span className="text-rose-500" aria-hidden="true">*</span>
               </label>
               <input
                 type="text"
                 id="medName"
+                name="name"
                 required
                 value={name}
-                onChange={(e) => setName(e.target.value)}
+                onChange={(e) => {
+                  setName(e.target.value);
+                  if (formError) setFormError(null);
+                }}
                 placeholder="مثلاً: كونكور 5 مجم (Concor)"
-                className="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 focus:border-emerald-500 focus:ring-2 focus:ring-emerald-200 text-sm font-semibold outline-none"
+                className="w-full min-h-11 px-3.5 py-2.5 rounded-xl border border-slate-300 focus-visible:border-emerald-500 focus-visible:ring-2 focus-visible:ring-emerald-200 text-sm font-semibold outline-none"
               />
             </div>
             <div className="space-y-1">
@@ -189,9 +242,10 @@ export const MedicineFormModal: React.FC<AddEditModalProps> = ({
               </label>
               <select
                 id="medType"
+                name="type"
                 value={type}
-                onChange={(e) => setType(e.target.value)}
-                className="w-full px-3 py-2.5 rounded-xl border border-slate-300 focus:border-emerald-500 focus:ring-2 focus:ring-emerald-200 text-sm font-semibold outline-none bg-white"
+                onChange={(e) => handleTypeChange(e.target.value)}
+                className="w-full min-h-11 px-3 py-2.5 rounded-xl border border-slate-300 focus-visible:border-emerald-500 focus-visible:ring-2 focus-visible:ring-emerald-200 text-sm font-semibold outline-none bg-white"
               >
                 <option value="أقراص">أقراص</option>
                 <option value="كبسولات">كبسولات</option>
@@ -206,88 +260,129 @@ export const MedicineFormModal: React.FC<AddEditModalProps> = ({
 
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 bg-slate-50 p-3.5 rounded-2xl border border-slate-200">
             <div className="space-y-1">
-              <label htmlFor="medInitialPills" className="block text-xs font-bold text-slate-800">
-                الكمية الابتدائية الإجمالية للعلبة <span className="text-rose-500">*</span>
+              <label htmlFor="medPackSize" className="block text-xs font-bold text-slate-800">
+                الكمية الكاملة في الشريط / العبوة (كمية التجديد){' '}
+                <span className="text-rose-500" aria-hidden="true">*</span>
               </label>
               <input
+                ref={packSizeInputRef}
                 type="number"
-                id="medInitialPills"
-                min="1"
+                id="medPackSize"
+                name="packSize"
+                inputMode="decimal"
+                min="0.5"
                 step="0.5"
                 required
-                value={initialPills}
-                onChange={(e) => setInitialPills(e.target.value)}
-                placeholder="مثلاً 30 حبة"
-                className="w-full px-3 py-2.5 rounded-xl border-2 border-emerald-300 bg-white focus:border-emerald-600 focus:ring-2 focus:ring-emerald-200 text-sm font-black text-emerald-800 outline-none"
+                aria-describedby="medPackSizeHelp"
+                value={packSize}
+                onChange={(e) => {
+                  setPackSize(e.target.value);
+                  setHasCustomPackSize(true);
+                  if (formError) setFormError(null);
+                }}
+                placeholder={type === 'شريط' ? 'مثلاً 10 أقراص' : 'مثلاً 30 حبة'}
+                className="w-full min-h-11 px-3 py-2.5 rounded-xl border-2 border-emerald-300 bg-white focus-visible:border-emerald-600 focus-visible:ring-2 focus-visible:ring-emerald-200 text-sm font-black text-emerald-800 outline-none"
               />
-              <span className="text-[10px] text-slate-500">
-                العدد الأصلي في العلبة وقت بدء الاستخدام
+              <span id="medPackSizeHelp" className="text-[10px] text-slate-500 block">
+                العدد الكامل في الشريط أو العبوة الجديدة — سيضيفه التطبيق تلقائياً عند التجديد.
               </span>
             </div>
 
             <div className="space-y-1">
               <label htmlFor="medDailyDose" className="block text-xs font-bold text-slate-800">
-                معدل الاستهلاك اليومي <span className="text-rose-500">*</span>
+                معدل الاستهلاك اليومي <span className="text-rose-500" aria-hidden="true">*</span>
               </label>
               <input
+                ref={dailyDoseInputRef}
                 type="number"
                 id="medDailyDose"
+                name="dailyDose"
+                inputMode="decimal"
                 min="0.25"
                 step="0.25"
                 required
+                aria-describedby="medDailyDoseHelp"
                 value={dailyDose}
-                onChange={(e) => setDailyDose(e.target.value)}
+                onChange={(e) => {
+                  setDailyDose(e.target.value);
+                  if (formError) setFormError(null);
+                }}
                 placeholder="مثلاً: 1 أو 2"
-                className="w-full px-3 py-2.5 rounded-xl border border-slate-300 focus:border-emerald-500 focus:ring-2 focus:ring-emerald-200 text-sm font-black outline-none bg-white"
+                className="w-full min-h-11 px-3 py-2.5 rounded-xl border border-slate-300 focus-visible:border-emerald-500 focus-visible:ring-2 focus-visible:ring-emerald-200 text-sm font-black outline-none bg-white"
               />
-              <span className="text-[10px] text-slate-500">
-                كم كبسولة / جرعة يتناولها الوالد يومياً
+              <span id="medDailyDoseHelp" className="text-[10px] text-slate-500 block">
+                كم قرص / جرعة يتناولها الوالد يومياً
               </span>
             </div>
           </div>
 
-          {type === 'شريط' && (
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 bg-violet-50 p-3.5 rounded-2xl border border-violet-200">
-              <div className="space-y-1">
-                <label htmlFor="stripCapacity" className="block text-xs font-bold text-violet-950">
-                  السعة القياسية للشريط
-                </label>
-                <input
-                  type="number"
-                  id="stripCapacity"
-                  min="1"
-                  step="1"
-                  value={stripCapacity}
-                  onChange={(e) => setStripCapacity(e.target.value)}
-                  className="w-full px-3 py-2.5 rounded-xl border border-violet-300 bg-white text-sm font-black text-violet-900 outline-none"
-                />
-                <span className="text-[10px] text-violet-700">
-                  عدد الأقراص عندما يكون الشريط كاملًا
+          <div className="bg-violet-50 p-3.5 rounded-2xl border border-violet-200 space-y-3">
+            <div className="flex items-start gap-2.5">
+              <input
+                type="checkbox"
+                id="medIsOpened"
+                name="isOpened"
+                checked={isOpened}
+                aria-expanded={isOpened}
+                aria-controls="openedRemainingGroup"
+                onChange={(e) => {
+                  const checked = e.target.checked;
+                  setIsOpened(checked);
+                  if (checked && !openedRemaining && editingMedicine) {
+                    setOpenedRemaining(String(editingMedicine.initialPills));
+                  }
+                  if (formError) setFormError(null);
+                }}
+                className="mt-0.5 w-5 h-5 rounded accent-violet-700 cursor-pointer shrink-0 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-violet-700"
+              />
+              <label htmlFor="medIsOpened" className="cursor-pointer select-none flex-1">
+                <span className="block text-xs font-extrabold text-violet-950">
+                  {editingMedicine
+                    ? 'رصيد بداية هذه الدورة مختلف عن السعة الكاملة (مفتوح / معدّل)'
+                    : 'الدواء مفتوح حالياً (بدأ الاستخدام منه بالفعل)'}
                 </span>
-              </div>
-              <div className="space-y-1">
+                <span className="text-[11px] text-violet-800 block mt-0.5">
+                  فعّل هذا الخيار لإدخال الكمية المتبقية الفعلية الآن مع احتفاظ التطبيق بالسعة الكاملة أعلاه عند التجديد.
+                </span>
+              </label>
+            </div>
+
+            {isOpened && (
+              <div
+                id="openedRemainingGroup"
+                className="pt-2.5 border-t border-violet-200/80 space-y-1"
+              >
                 <label
-                  htmlFor="stripPillsRemainingAtStart"
+                  htmlFor="medOpenedRemaining"
                   className="block text-xs font-bold text-violet-950"
                 >
-                  الأقراص المتبقية في الشريط عند البدء
+                  {editingMedicine ? 'رصيد بداية الدورة الحالية' : 'الكمية المتبقية حالياً'}{' '}
+                  <span className="text-rose-500" aria-hidden="true">*</span>
                 </label>
                 <input
+                  ref={openedRemainingInputRef}
                   type="number"
-                  id="stripPillsRemainingAtStart"
-                  min="0"
-                  step="1"
-                  max={stripCapacity}
-                  value={stripPillsRemainingAtStart}
-                  onChange={(e) => setStripPillsRemainingAtStart(e.target.value)}
-                  className="w-full px-3 py-2.5 rounded-xl border border-violet-300 bg-white text-sm font-black text-violet-900 outline-none"
+                  id="medOpenedRemaining"
+                  name="openedRemaining"
+                  inputMode="decimal"
+                  min="0.5"
+                  step="0.5"
+                  required={isOpened}
+                  aria-describedby="medOpenedRemainingHelp"
+                  value={openedRemaining}
+                  onChange={(e) => {
+                    setOpenedRemaining(e.target.value);
+                    if (formError) setFormError(null);
+                  }}
+                  placeholder="مثلاً: 4 أو 6"
+                  className="w-full min-h-11 px-3 py-2.5 rounded-xl border-2 border-violet-300 bg-white focus-visible:border-violet-600 focus-visible:ring-2 focus-visible:ring-violet-200 text-sm font-black text-violet-900 outline-none"
                 />
-                <span className="text-[10px] text-violet-700">
-                  حقل خاص بالشريط الحالي عند بدء العلبة فقط
+                <span id="medOpenedRemainingHelp" className="text-[10px] text-violet-700 block">
+                  سيبدأ العد التلقائي من هذا الرقم، وعند التجديد سيضيف التطبيق ({packSize || '—'}) تلقائياً.
                 </span>
               </div>
-            </div>
-          )}
+            )}
+          </div>
 
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <div className="space-y-1">
@@ -494,12 +589,7 @@ export const MedicineFormModal: React.FC<AddEditModalProps> = ({
 interface QuickRefillModalProps {
   medicine: Medicine | null;
   onClose: () => void;
-  onConfirm: (
-    medId: string,
-    newPackCount: number,
-    carryOver: boolean,
-    stripPillsRemainingAtStart?: number
-  ) => void;
+  onConfirm: (medId: string, addedAmount: number, carryOver: boolean) => void;
 }
 
 export const QuickRefillModal: React.FC<QuickRefillModalProps> = ({
@@ -507,34 +597,45 @@ export const QuickRefillModal: React.FC<QuickRefillModalProps> = ({
   onClose,
   onConfirm,
 }) => {
-  const [packCount, setPackCount] = useState<string>('30');
+  const [packCount, setPackCount] = useState<string>(String(DEFAULT_PACK_SIZE));
   const [carryOver, setCarryOver] = useState<boolean>(true);
-  const [stripPillsRemainingAtStart, setStripPillsRemainingAtStart] = useState<string>('10');
+  const [refillError, setRefillError] = useState<string | null>(null);
+  const refillInputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
     if (medicine) {
-      setPackCount(String(medicine.initialPills || 30));
-      setStripPillsRemainingAtStart(
-        String(
-          medicine.stripPillsRemainingAtStart !== undefined
-            ? medicine.stripPillsRemainingAtStart
-            : medicine.actualStripPills !== undefined
-              ? medicine.actualStripPills
-              : medicine.stripCapacity || 10
-        )
-      );
+      setPackCount(String(getPackSize(medicine)));
       setCarryOver(true);
+      setRefillError(null);
     }
   }, [medicine]);
 
   if (!medicine) return null;
+
+  const standardPackSize = getPackSize(medicine);
   const metrics = calculateMedicationMetrics(medicine);
+  const parsedAmount = parseFloat(packCount);
+  const isValidAmount = Number.isFinite(parsedAmount) && parsedAmount > 0;
+  const preview = isValidAmount
+    ? calculateRefillResult(medicine, parsedAmount, carryOver)
+    : null;
+
+  const handleConfirm = () => {
+    if (!isValidAmount) {
+      setRefillError('يرجى إدخال كمية تجديد صالحة (أكبر من صفر).');
+      refillInputRef.current?.focus();
+      return;
+    }
+    setRefillError(null);
+    onConfirm(medicine.id, parsedAmount, carryOver);
+  };
 
   return (
     <div
       id="quickRefillModal"
       role="dialog"
       aria-modal="true"
+      aria-labelledby="quickRefillTitle"
       className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4"
     >
       <div className="bg-white rounded-3xl max-w-md w-full shadow-2xl border border-slate-100 overflow-hidden p-6 space-y-4">
@@ -542,71 +643,110 @@ export const QuickRefillModal: React.FC<QuickRefillModalProps> = ({
           <i className="fa-solid fa-cart-shopping"></i>
         </div>
         <div className="text-center">
-          <h3 className="text-lg font-black text-slate-900">تجديد العلبة (شراء جديد)</h3>
+          <h3 id="quickRefillTitle" className="text-lg font-black text-slate-900">
+            تجديد الدواء (شراء جديد)
+          </h3>
           <p className="text-sm font-bold text-emerald-600 mt-1">{medicine.name}</p>
           <p className="text-xs text-slate-500 mt-1">
-            سيتم بدء احتساب دورة الدواء من تاريخ اليوم تلقائياً مع رصيد العلبة الجديد.
+            سيتم بدء احتساب الدورة الجديدة من اليوم بإضافة كمية التجديد المحددة.
           </p>
         </div>
 
         <div className="bg-slate-50 p-4 rounded-2xl border border-slate-200 space-y-3">
+          <div className="space-y-1.5">
+            <span className="block text-xs font-bold text-slate-700">
+              اختيار سريع حسب السعة الكاملة ({standardPackSize}):
+            </span>
+            <div className="grid grid-cols-3 gap-2">
+              {[1, 2, 3].map((multiplier) => {
+                const total = +(standardPackSize * multiplier).toFixed(2);
+                const isSelected = isValidAmount && Math.abs(parsedAmount - total) < 0.001;
+                return (
+                  <button
+                    key={multiplier}
+                    type="button"
+                    aria-pressed={isSelected}
+                    onClick={() => {
+                      setPackCount(String(total));
+                      if (refillError) setRefillError(null);
+                    }}
+                    className={`min-h-11 px-2 py-2 rounded-xl border text-xs font-extrabold transition ${
+                      isSelected
+                        ? 'bg-emerald-600 text-white border-emerald-600 shadow-sm'
+                        : 'bg-white text-slate-700 border-slate-300 hover:bg-emerald-50 hover:border-emerald-300'
+                    }`}
+                  >
+                    {formatMultiplierLabel(medicine.type, multiplier, total)}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
           <div>
             <label
               htmlFor="refillPillCountInput"
               className="block text-xs font-bold text-slate-700 mb-1"
             >
-              سعة العلبة الجديدة المشتراة:
+              الكمية المضافة عند التجديد:
             </label>
             <input
+              ref={refillInputRef}
               type="number"
               id="refillPillCountInput"
-              min="1"
+              name="refillAmount"
+              inputMode="decimal"
+              min="0.5"
+              step="0.5"
+              aria-describedby="refillPackSizeHint"
+              aria-invalid={refillError ? 'true' : undefined}
               value={packCount}
-              onChange={(e) => setPackCount(e.target.value)}
-              className="w-full px-3 py-2.5 rounded-xl border border-slate-300 font-black text-slate-800 text-center text-lg focus:border-emerald-500 outline-none bg-white"
+              onChange={(e) => {
+                setPackCount(e.target.value);
+                if (refillError) setRefillError(null);
+              }}
+              className="w-full min-h-11 px-3 py-2.5 rounded-xl border border-slate-300 font-black text-slate-800 text-center text-lg focus-visible:border-emerald-500 focus-visible:ring-2 focus-visible:ring-emerald-200 outline-none bg-white"
             />
+            <span id="refillPackSizeHint" className="text-[10px] text-slate-500 block mt-1 text-center">
+              السعة الكاملة المحفوظة: {standardPackSize} (تبقى محفوظة للتجديدات القادمة)
+            </span>
           </div>
 
+          {refillError && (
+            <p role="alert" className="text-xs font-bold text-rose-700 text-center">
+              {refillError}
+            </p>
+          )}
+
           {metrics.currentPills > 0 && (
-            <div className="flex items-center gap-2 pt-1 border-t border-slate-200 text-xs font-bold text-slate-700">
+            <div className="flex items-center gap-2.5 pt-2 border-t border-slate-200 text-xs font-bold text-slate-700">
               <input
                 type="checkbox"
                 id="carryOverRemaining"
+                name="carryOverRemaining"
                 checked={carryOver}
                 onChange={(e) => setCarryOver(e.target.checked)}
-                className="w-4 h-4 rounded text-emerald-600 focus:ring-emerald-500"
+                className="w-5 h-5 rounded accent-emerald-600 cursor-pointer shrink-0"
               />
               <label htmlFor="carryOverRemaining" className="cursor-pointer">
-                إضافة المتبقي السابق ({metrics.currentPills} حبة) إلى العلبة الجديدة
+                إضافة المتبقي السابق ({metrics.currentPills}) إلى الرصيد الجديد
               </label>
             </div>
           )}
 
-          {medicine.type === 'شريط' && (
-            <div className="pt-2 border-t border-violet-200">
-              <label
-                htmlFor="refillStripPillsRemainingAtStart"
-                className="block text-xs font-bold text-violet-950 mb-1"
-              >
-                الأقراص المتبقية فعليًا في الشريط عند التجديد:
-              </label>
-              <input
-                type="number"
-                id="refillStripPillsRemainingAtStart"
-                min="0"
-                step="1"
-                max={String(
-                  medicine.stripCapacity !== undefined
-                    ? medicine.stripCapacity
-                    : 10
-                )}
-                value={stripPillsRemainingAtStart}
-                onChange={(e) => setStripPillsRemainingAtStart(e.target.value)}
-                className="w-full px-3 py-2.5 rounded-xl border border-violet-300 font-black text-violet-900 text-center text-lg focus:border-violet-500 outline-none bg-white"
-              />
-              <span className="text-[10px] text-violet-700 block mt-1">
-                لا يحل هذا الحقل محل العدد الإجمالي لعلبة الشريط المكتوب أعلاه.
+          {preview && (
+            <div
+              aria-live="polite"
+              className="bg-emerald-50 border border-emerald-200 rounded-xl px-3 py-2 text-center"
+            >
+              <span className="text-xs font-extrabold text-emerald-900 block">
+                الرصيد بعد التجديد: {preview.totalStartingPills}
               </span>
+              {preview.carriedOverPills > 0 && (
+                <span className="text-[11px] font-semibold text-emerald-700 block mt-0.5">
+                  ({preview.addedAmount} جديدة + {preview.carriedOverPills} متبقي سابق)
+                </span>
+              )}
             </div>
           )}
         </div>
@@ -615,26 +755,17 @@ export const QuickRefillModal: React.FC<QuickRefillModalProps> = ({
           <button
             type="button"
             onClick={onClose}
-            className="w-1/2 py-2.5 rounded-xl border border-slate-300 text-slate-600 font-bold text-xs hover:bg-slate-50 transition"
+            className="w-1/2 min-h-11 py-2.5 rounded-xl border border-slate-300 text-slate-600 font-bold text-xs hover:bg-slate-50 transition"
           >
             إلغاء
           </button>
           <button
             type="button"
-            onClick={() =>
-              onConfirm(
-                medicine.id,
-                parseFloat(packCount) || medicine.initialPills || 30,
-                carryOver,
-                medicine.type === 'شريط'
-                  ? Math.max(0, parseFloat(stripPillsRemainingAtStart) || 0)
-                  : undefined
-              )
-            }
-            className="w-1/2 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-extrabold text-xs shadow-md transition flex items-center justify-center gap-1.5"
+            onClick={handleConfirm}
+            className="w-1/2 min-h-11 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-extrabold text-xs shadow-md transition flex items-center justify-center gap-1.5"
           >
             <i className="fa-solid fa-check"></i>
-            <span>تأكيد وبدء العلبة الآن</span>
+            <span>تأكيد التجديد الآن</span>
           </button>
         </div>
       </div>
@@ -694,14 +825,17 @@ export const AdjustBalanceModal: React.FC<AdjustBalanceModalProps> = ({
           <input
             type="number"
             id="adjustRealCountInput"
+            name="actualCount"
+            inputMode="decimal"
             min="0"
             step="0.5"
+            aria-describedby="adjustPackSizeKeepHint"
             value={actualCount}
             onChange={(e) => setActualCount(e.target.value)}
-            className="w-full px-3 py-2.5 rounded-xl border border-amber-300 font-black text-slate-900 text-center text-xl focus:border-amber-500 outline-none bg-white"
+            className="w-full min-h-11 px-3 py-2.5 rounded-xl border border-amber-300 font-black text-slate-900 text-center text-xl focus-visible:border-amber-500 outline-none bg-white"
           />
-          <span className="text-[11px] text-amber-700 block text-center">
-            سيتم استئناف الحساب التلقائي بناءً على هذا العدد بدءاً من اليوم
+          <span id="adjustPackSizeKeepHint" className="text-[11px] text-amber-700 block text-center">
+            سيُستأنف الحساب التلقائي من هذا العدد بدءاً من اليوم، مع الاحتفاظ بسعة التجديد ({getPackSize(medicine)}) كما هي.
           </span>
         </div>
 

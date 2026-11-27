@@ -145,38 +145,10 @@ export function resolveMedicineFormInventory(
   return { packSize, initialPills: openedRemaining };
 }
 
-export function getStripCapacity(med: Medicine): number {
-  const capacity = Number(med.stripCapacity);
-  return Number.isFinite(capacity) && capacity > 0
-    ? capacity
-    : DEFAULT_STRIP_CAPACITY;
-}
-
-export function getActualStripPills(med: Medicine): number {
-  return getStripPillsRemainingAtStart(med);
-}
-
-export function getStripPillsRemainingAtStart(med: Medicine): number {
-  const actual = Number(
-    med.stripPillsRemainingAtStart !== undefined
-      ? med.stripPillsRemainingAtStart
-      : med.actualStripPills
-  );
-  return Number.isFinite(actual) && actual >= 0
-    ? actual
-    : getStripCapacity(med);
-}
-
-export function getStripDescription(med: Medicine): string | null {
-  if (med.type !== 'شريط') return null;
-  return `شريط حالي: ${getStripPillsRemainingAtStart(med)} من ${getStripCapacity(med)} قرص`;
-}
-
 export function updateMedicineInventory(
   med: Medicine,
   initialPills: number,
-  startDate: string,
-  stripPillsRemainingAtStart?: number
+  startDate: string
 ): Medicine {
   return {
     ...med,
@@ -184,9 +156,6 @@ export function updateMedicineInventory(
     initialPills,
     startDate,
     renewalAlertPlan: [],
-    ...(stripPillsRemainingAtStart !== undefined
-      ? { stripPillsRemainingAtStart }
-      : {}),
   };
 }
 

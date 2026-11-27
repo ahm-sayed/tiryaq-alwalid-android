@@ -2,10 +2,28 @@ import React from 'react';
 import {
   calculateMedicationMetrics,
   getRenewalAlertLimit,
-  getStripDescription,
+  isStartedOpened,
   WEEKDAYS_AR,
   type Medicine,
 } from '../utils/medicationLogic';
+
+function getUnitLabel(type: string): string {
+  switch (type) {
+    case 'شريط':
+    case 'أقراص':
+      return 'قرص';
+    case 'كبسولات':
+      return 'كبسولة';
+    case 'شراب / مل':
+      return 'مل';
+    case 'حقن / أمبول':
+      return 'أمبول';
+    case 'بخاخ':
+      return 'بخة';
+    default:
+      return 'وحدة';
+  }
+}
 
 interface MedicineCardProps {
   med: Medicine;
@@ -23,6 +41,8 @@ export const MedicineCard: React.FC<MedicineCardProps> = ({
   onRefill,
 }) => {
   const metrics = calculateMedicationMetrics(med);
+  const unitLabel = getUnitLabel(med.type);
+  const startedOpened = isStartedOpened(med);
 
   let cardBorderColor = 'border-slate-200';
   let statusBadgeBg = 'bg-emerald-100 text-emerald-800';
@@ -70,11 +90,16 @@ export const MedicineCard: React.FC<MedicineCardProps> = ({
             <h3 className="text-base sm:text-lg font-black text-slate-900 mt-1.5 leading-snug">
               {med.name}
             </h3>
-            {getStripDescription(med) && (
-              <p className="mt-1 text-[11px] font-bold text-violet-700">
-                {getStripDescription(med)}
-              </p>
-            )}
+            <div className="mt-1 flex items-center gap-1.5 flex-wrap">
+              <span className="text-[11px] font-bold px-2 py-0.5 rounded-md bg-emerald-50 text-emerald-800 border border-emerald-200/70">
+                سعة التجديد الكاملة: {metrics.packSize} {unitLabel}
+              </span>
+              {startedOpened && (
+                <span className="text-[11px] font-bold px-2 py-0.5 rounded-md bg-violet-50 text-violet-700 border border-violet-200">
+                  بدأ مفتوحاً ({med.initialPills} من {metrics.packSize})
+                </span>
+              )}
+            </div>
           </div>
 
           {/* خيارات الإدارة */}
@@ -103,11 +128,11 @@ export const MedicineCard: React.FC<MedicineCardProps> = ({
         {/* لوحة الحساب التلقائي الصارم بالأيام */}
         <div className="bg-slate-50 rounded-2xl p-3 border border-slate-100 space-y-2 mb-3">
           <div className="flex items-baseline justify-between text-xs">
-            <span className="text-slate-500 font-bold">المتبقي حالياً بالعلبة:</span>
+            <span className="text-slate-500 font-bold">المتبقي حالياً:</span>
             <span className="font-black text-slate-900 text-lg">
               {metrics.currentPills}{' '}
               <span className="text-xs text-slate-500 font-medium">
-                / {metrics.initialPills} كبسولة
+                / {metrics.referenceCapacity} {unitLabel}
               </span>
             </span>
           </div>
@@ -214,12 +239,12 @@ export const MedicineCard: React.FC<MedicineCardProps> = ({
         <button
           type="button"
           onClick={() => onRefill(med.id)}
-          title={`تجديد العلبة لـ ${med.name}`}
-          aria-label={`تجديد العلبة لـ ${med.name}`}
+          title={`تجديد دواء ${med.name}`}
+          aria-label={`تجديد دواء ${med.name}`}
           className="py-2.5 px-3 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-extrabold text-xs shadow-sm transition flex items-center justify-center gap-1.5 active:scale-95"
         >
           <i className="fa-solid fa-cart-shopping"></i>
-          <span>تجديد العلبة</span>
+          <span>تجديد الدواء</span>
         </button>
       </div>
     </div>

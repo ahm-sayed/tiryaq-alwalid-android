@@ -8,6 +8,7 @@ import {
   STORAGE_KEY,
   calculateMedicationMetrics,
   calculatePortfolioStats,
+  calculateRefillResult,
   formatIsoDate,
   getDefaultSampleMedicines,
   getUrgentMedicinesList,
@@ -162,8 +163,7 @@ export default function App() {
           !source ||
           !scheduled ||
           med.initialPills !== source.initialPills ||
-          med.stripCapacity !== source.stripCapacity ||
-          med.stripPillsRemainingAtStart !== source.stripPillsRemainingAtStart ||
+          med.packSize !== source.packSize ||
           med.startDate !== source.startDate ||
           med.renewalAlertLimit !== source.renewalAlertLimit ||
           med.courseType !== source.courseType ||
@@ -335,35 +335,28 @@ export default function App() {
 
   const handleConfirmRefill = (
     medId: string,
-    newPackCount: number,
-    carryOver: boolean,
-    stripPillsRemainingAtStart?: number
+    addedAmount: number,
+    carryOver: boolean
   ) => {
     markUserInteraction();
     const target = medicines.find((m) => m.id === medId);
     if (!target) return;
 
-    const metrics = calculateMedicationMetrics(target);
-    const shouldCarry = carryOver && metrics.currentPills > 0;
-    const totalStartingPills = shouldCarry
-      ? +(newPackCount + metrics.currentPills).toFixed(2)
-      : newPackCount;
+    const refill = calculateRefillResult(target, addedAmount, carryOver);
 
     const nextMeds = medicines.map((m) =>
       m.id === medId
-        ? updateMedicineInventory(
-            m,
-            totalStartingPills,
-            formatIsoDate(),
-            stripPillsRemainingAtStart
-          )
+        ? updateMedicineInventory(m, refill.totalStartingPills, formatIsoDate())
         : m
     );
 
     setMedicines(nextMeds);
     setRefillMedId(null);
     playSuccessChime();
-    showToast(`مبارك! تم تجديد (${target.name}) برصيد ${totalStartingPills} حبة`, 'success');
+    showToast(
+      `مبارك! تم تجديد (${target.name}) بإضافة ${refill.addedAmount} ليصبح الرصيد ${refill.totalStartingPills}`,
+      'success'
+    );
     checkAllMedicationsRefillStatus(nextMeds);
   };
 
